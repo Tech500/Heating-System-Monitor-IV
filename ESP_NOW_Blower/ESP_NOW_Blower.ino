@@ -59,7 +59,7 @@ const unsigned long SAMPLE_PERIOD_MICROS = 100;
 
 // Filter parameters
 const float lowerCutoff = 500.0;
-const float upperCutoff = 4000.0;
+const float upperCutoff = 8000.0;
 
 FilterOnePole highPassFilter;
 FilterTwoPole lowPassFilter;
