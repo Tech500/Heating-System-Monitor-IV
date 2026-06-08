@@ -10,8 +10,8 @@
 // ─────────────────────────────────────────────
 // WiFi & FTP Credentials
 // ─────────────────────────────────────────────
-const char* ssid = "R2D2";
-const char* password = "Sky7388500";
+const char* ssid = "ssid";
+const char* password = "password";
 
 FTPServer ftpSrv(LittleFS);
 WebServer server(80);
