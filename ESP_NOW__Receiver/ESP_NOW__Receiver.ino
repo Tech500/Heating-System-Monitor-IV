@@ -1,4 +1,3 @@
-#line 1 "C:\\Users\\lcs--\\OneDrive\\Documents\\Arduino\\libraries\\HeatingMonitor_Receiver_VII\\HeatingMonitor_Receiver_VII.ino"
 #include <Arduino.h>
 #include <Wire.h>
 #include <WiFi.h>
@@ -12,11 +11,11 @@
 #include <HTTPClient.h>
 #include <Ticker.h>
 
-const char* ssid     = "R2D2";
-const char* password = "Sky7388500";
+const char* ssid     = "ssid";
+const char* password = "password";
 
 // ─── GOOGLE DEPLOYMENT ID ────────────────────────────────────────────────────
-const String googleDeploymentID = "AKfycbwXzMgSQXMz96mz-a7ZeN6b3Yk_IfjqBgnnPcxp3zILSZLA0XPDDVF1FjewD6i-t4rd";
+const String googleDeploymentID = "Removed for security";
 const String googleURL          = "https://script.google.com/macros/s/" + googleDeploymentID + "/exec";
 // ─────────────────────────────────────────────────────────────────────────────
 
