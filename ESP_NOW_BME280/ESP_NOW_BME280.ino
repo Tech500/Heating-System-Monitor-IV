@@ -1,11 +1,11 @@
-#include <Arduino.h>
-#line 1 "D:\\Heating _System_ Monitor_III\\Production --Keep\\ESP_NOW_Sender_2\\ESP_NOW_Sender_2.ino"
 /* Heating System Monitor  
-   ESP_NOW Sender_2.ino   --KEEP!!!
+   ESP_NOW Sender_2.ino   
    June 6, 2026 
-   ESP Now, Verified Core 3.3.10 Native Virtual Function Mapping
+   ESP Now, Verified latest Arduino Core 3.3.10 
 */
 
+
+#include <Arduino.h>
 #include <Wire.h>
 #include <BME280I2C.h>
 #include <WiFi.h>
@@ -114,17 +114,13 @@ Custom_Master_Peer master_peer(masterAddress, WIFI_IF_STA);
 // ─────────────────────────────────────────────
 // BME280 Sensor Data Transmission Engine
 // ─────────────────────────────────────────────
-#line 115 "D:\\Heating _System_ Monitor_III\\Production --Keep\\ESP_NOW_Sender_2\\ESP_NOW_Sender_2.ino"
 void BME280();
-#line 146 "D:\\Heating _System_ Monitor_III\\Production --Keep\\ESP_NOW_Sender_2\\ESP_NOW_Sender_2.ino"
 void updateDisplay();
-#line 153 "D:\\Heating _System_ Monitor_III\\Production --Keep\\ESP_NOW_Sender_2\\ESP_NOW_Sender_2.ino"
 void setup();
-#line 190 "D:\\Heating _System_ Monitor_III\\Production --Keep\\ESP_NOW_Sender_2\\ESP_NOW_Sender_2.ino"
 void loop();
-#line 115 "D:\\Heating _System_ Monitor_III\\Production --Keep\\ESP_NOW_Sender_2\\ESP_NOW_Sender_2.ino"
 void BME280() {
-  float temp = NAN, hum = NAN, pres = NAN;
+
+float temp = NAN, hum = NAN, pres = NAN;
 
   BME280::TempUnit tempUnit(BME280::TempUnit_Fahrenheit);
   BME280::PresUnit presUnit(BME280::PresUnit_hPa);
