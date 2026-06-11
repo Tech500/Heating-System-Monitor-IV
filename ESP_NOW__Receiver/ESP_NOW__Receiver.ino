@@ -56,11 +56,6 @@ time_t tnow;
 Ticker secondTicker;
 volatile bool oneSecondElapsed = false;
 
-#line 333 "C:\\Users\\lcs--\\OneDrive\\Documents\\Arduino\\libraries\\HeatingMonitor_Receiver_VII\\HeatingMonitor_Receiver_VII.ino"
-void setup();
-#line 370 "C:\\Users\\lcs--\\OneDrive\\Documents\\Arduino\\libraries\\HeatingMonitor_Receiver_VII\\HeatingMonitor_Receiver_VII.ino"
-void loop();
-#line 52 "C:\\Users\\lcs--\\OneDrive\\Documents\\Arduino\\libraries\\HeatingMonitor_Receiver_VII\\HeatingMonitor_Receiver_VII.ino"
 void IRAM_ATTR countSecondsISR() {
   oneSecondElapsed = true;
 }
