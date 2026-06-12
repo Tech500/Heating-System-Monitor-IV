@@ -3,7 +3,7 @@
 **Intensive collaboration with myself, Claude AI (Anthropic), and Gemini AI (Google).**
 
 No electrical connection to the heating system — monitors temperatures and blower run time only via acoustical detectio
-Works in both cooling and heating seansons --year round!
+Works in both cooling and heating seasons --year round!
 
 ## Overview
 
