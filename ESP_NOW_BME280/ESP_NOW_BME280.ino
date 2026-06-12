@@ -1,6 +1,6 @@
 /* Heating System Monitor III 
    ESP_NOW_BME280.ino   
-   June 6, 2026 
+   June 12, 2026 
    ESP Now, Verified latest Arduino Core 3.3.10 
 */
 
