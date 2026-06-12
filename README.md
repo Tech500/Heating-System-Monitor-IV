@@ -97,7 +97,7 @@ and gives much better control than a standard screwdriver.
 11. Set **Execute as:** Me.
 12. Set **Who has access:** Anyone.
 13. Click **Authorize** → **Advanced** → click your Gmail account → **Allow**.
-14. Copy the deployment URL and paste it into the Receiver sketch as the Google Script endpoint.
+14. Copy the deployment URL and paste it into the Receiver sketch as the Google Script id endpoint.
 
 > **Note:** If you redeploy after changes, you must create a **New Deployment** each time —
 > not "Manage existing." The Receiver sketch URL must be updated to match the new deployment URL.
@@ -127,7 +127,7 @@ and gives much better control than a standard screwdriver.
 ## Dependencies
 
 - Arduino ESP32 Core 3.3.10
-- Adafruit BME280 Library
+- Tylor Glenn BME280I2C.h Library
 - MCP9808 (direct Wire register reads — no library required)
 - LittleFS (built into ESP32 Arduino Core)
 
