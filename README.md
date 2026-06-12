@@ -11,6 +11,10 @@ Heating System Monitor III is a three-node ESP32 system using ESP-NOW for wirele
 The blower node acoustically detects HVAC blower on/off cycles using a KY-038 microphone module
 and variance-based thresholding. No electrical hookup to the heating system is required.
 
+What is variance-based thresholdin?
+
+Blower state is inferred acoustically by computing the statistical variance of ADC samples taken from the KY-038 microphone module's analog output. A running blower produces broadband mechanical noise, causing significant ADC sample fluctuation (high variance). A quiet room produces near-flat ADC output (low variance). The KY-038 onboard potentiometer sets the sensitivity threshold — adjusted once at installation with the blower off.
+
 Logged data includes: timestamp, outside temperature, inside temperature, register temperature,
 thermostat temperature, elapsed blower time, and daily total blower time — written to both a
 local LittleFS log file and a perpetual Google Sheet (month-to-month, year-to-year).
