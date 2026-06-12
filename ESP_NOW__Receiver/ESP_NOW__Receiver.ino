@@ -1,9 +1,11 @@
-/* Heating System Monitor  
-   ESP_NOW_Receiver.ino
-   June 6, 2026 
-   ESP Now, Verified Core 3.3.10 Native Virtual Function Mapping
+/* Heating System Monitor III
+   ESP_NOW_Receeeiver.ino
+   June 2026
+   ESP-NOW,  ESP32 Core 3.3.10 
+   Receives MSG_BLOWER_STATE from ESP_NOW_Blower node
+   Receives MSG_BME280 from ESP_NOW_BME280 node
+   Sends MSG_ALERT_FLAG to BME280 node to request outside temp
 */
-
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -22,9 +24,8 @@ const char* ssid     = "ssid";
 const char* password = "password";
 
 // ─── GOOGLE DEPLOYMENT ID ────────────────────────────────────────────────────
-const String googleDeploymentID = "Removed for security";
+const String googleDeploymentID = "Rremoved for security";
 const String googleURL          = "https://script.google.com/macros/s/" + googleDeploymentID + "/exec";
-// ─────────────────────────────────────────────────────────────────────────────
 
 // ─── MCP9808 Direct Wire Register Definitions ────────────────────────────────
 #define MCP9808_ADDR      0x18
@@ -38,7 +39,6 @@ const float LOW_TEMP_F  = 65.0;
 const float HIGH_TEMP_F = 74.0;
 const float LOW_TEMP_C  = (LOW_TEMP_F  - 32.0) / 1.8;
 const float HIGH_TEMP_C = (HIGH_TEMP_F - 32.0) / 1.8;
-// ─────────────────────────────────────────────────────────────────────────────
 
 // ─── NTP / Time ──────────────────────────────────────────────────────────────
 const char* udpAddress1 = "pool.ntp.org";
@@ -50,7 +50,6 @@ char strftime_buf[64];
 String dtStamp    = "";
 String lastUpdate = "";
 time_t tnow;
-// ─────────────────────────────────────────────────────────────────────────────
 
 // ─── Ticker / One-Second ISR ─────────────────────────────────────────────────
 Ticker secondTicker;
@@ -59,16 +58,14 @@ volatile bool oneSecondElapsed = false;
 void IRAM_ATTR countSecondsISR() {
   oneSecondElapsed = true;
 }
-// ─────────────────────────────────────────────────────────────────────────────
 
-// ─── Message / Packet Structures (identical on all boards) ───────────────────
+// ─── Message / Packet Structures ─────────────────────────────────────────────
 enum MessageType : uint8_t {
   MSG_BME280       = 0,
   MSG_ALERT_FLAG   = 1,
   MSG_BLOWER_STATE = 2
 };
 
-// Expanded — carries elapsed and daily minutes from sender
 struct __attribute__((packed)) BlowerData {
   MessageType type;
   bool        on;
@@ -76,7 +73,7 @@ struct __attribute__((packed)) BlowerData {
   float       dailyTotalMinutes;
 };
 
-struct __attribute__((packed)) BmeData {
+struct __attribute__((packed)) BME280Data {
   MessageType type;
   float temperature;
   float humidity;
@@ -103,7 +100,10 @@ SensorRegisters sensordata;
 FTPServer ftpSrv(LittleFS);
 WebServer server(80);
 
-// ─── ESP-NOW Peer Classes (Core 3.x compliant) ───────────────────────────────
+// ─── ESP-NOW Peer Classes ─────────────────────────────────────────────────────
+
+// Forward declaration required by peer classes
+void processIncomingPacket(const uint8_t *data, int len);
 
 // Blower node — receive only
 class HeatingSenderPeer : public ESP_NOW_Peer {
@@ -117,12 +117,11 @@ class HeatingSenderPeer : public ESP_NOW_Peer {
 
   protected:
     void onReceive(const uint8_t *data, size_t len, bool broadcast) override {
-      extern void processIncomingPacket(const uint8_t *data, int len);
       processIncomingPacket(data, (int)len);
     }
 };
 
-// BME280 node — bidirectional: receives MSG_BME280, sends MSG_ALERT_FLAG
+// BME280 node — bidirectional
 class BME280Peer : public ESP_NOW_Peer {
   public:
     BME280Peer(const uint8_t *mac_addr, uint8_t channel,
@@ -141,15 +140,14 @@ class BME280Peer : public ESP_NOW_Peer {
 
   protected:
     void onReceive(const uint8_t *data, size_t len, bool broadcast) override {
-      extern void processIncomingPacket(const uint8_t *data, int len);
       processIncomingPacket(data, (int)len);
     }
 };
 
 // ─── Hardware MAC Map ─────────────────────────────────────────────────────────
-uint8_t senderBlowerMAC[] = { 0xE4, 0x65, 0xB8, 0x20, 0x20, 0xA0 };
+uint8_t senderBlowerMAC[] = { 0xE4, 0x65, 0xB8, 0x24, 0xF6, 0x4C };
 uint8_t senderBmeMAC[]    = { 0xE4, 0x65, 0xB8, 0x25, 0x42, 0xF8 };
-#define CHANNEL 11
+#define CHANNEL 0
 
 HeatingSenderPeer blowerNode(senderBlowerMAC, CHANNEL, WIFI_IF_STA);
 BME280Peer        bmeNode(senderBmeMAC,       CHANNEL, WIFI_IF_STA);
@@ -168,7 +166,6 @@ float globalPressure     = 0.0;
 float thermostatSetpoint = 72.0;
 
 // ─── Forward Declarations ─────────────────────────────────────────────────────
-void processIncomingPacket(const uint8_t *data, int len);
 void sendGoogleSheetsData();
 void sendDataToServer(String updateTime, float outT, float inT, float regT,
                       float therm, double eventM, double dailyM);
@@ -187,7 +184,7 @@ String urlEncode(String str);
 // ─── NTP Init ────────────────────────────────────────────────────────────────
 void initNTP() {
   configTime(0, 0, udpAddress1, udpAddress2);
-  setenv("TZ", "EST+5EDT,M3.2.0/2,M11.1.0/2", 2);  // Indianapolis, Indiana
+  setenv("TZ", "EST+5EDT,M3.2.0/2,M11.1.0/2", 2);
   tzset();
   Serial.print("Waiting for first valid NTP timestamp");
   while (time(nullptr) < 100000ul) {
@@ -213,7 +210,7 @@ String getDateTime() {
   return dtStamp;
 }
 
-// ─── MCP9808 Direct Wire Implementation ──────────────────────────────────────
+// ─── MCP9808 ─────────────────────────────────────────────────────────────────
 void initMCP9808() {
   Wire.beginTransmission(MCP9808_ADDR);
   Wire.write(MCP9808_REG_CFG);
@@ -285,6 +282,8 @@ String urlEncode(String str) {
 
 // ─── Packet Processing Pipeline ──────────────────────────────────────────────
 void processIncomingPacket(const uint8_t *data, int len) {
+  Serial.printf(">>> processIncomingPacket: len=%d  type=%d  sizeof(BlowerData)=%d\n",
+                len, data[0], sizeof(BlowerData));
   if (len < 1) return;
 
   MessageType incomingType = (MessageType)data[0];
@@ -300,57 +299,66 @@ void processIncomingPacket(const uint8_t *data, int len) {
                       blowerIsOn ? "ON" : "OFF",
                       blowerPacket.elapsedMinutes,
                       blowerPacket.dailyTotalMinutes);
-
-        // Pull run time directly from sender — no local tracking needed
-        if (!blowerIsOn) {
-          elapsedMinutes               = blowerPacket.elapsedMinutes;
-          dailyTotalMinutes            = blowerPacket.dailyTotalMinutes;
-          sensordata.lastEventMinutes  = blowerPacket.elapsedMinutes;
-          sensordata.dailyTotalMinutes = blowerPacket.dailyTotalMinutes;
-          alertFlag = true;  // Trigger gatekeeper
-        }
+        elapsedMinutes               = blowerPacket.elapsedMinutes;
+        dailyTotalMinutes            = blowerPacket.dailyTotalMinutes;
+        sensordata.lastEventMinutes  = blowerPacket.elapsedMinutes;
+        sensordata.dailyTotalMinutes = blowerPacket.dailyTotalMinutes;
+        alertFlag = true;
       } else {
-        Serial.printf("\n⚠️ Size Mismatch for Blower Packet: Expected %d, got %d bytes\n",
+        Serial.printf("\n⚠️ Size Mismatch — BlowerData: Expected %d got %d bytes\n",
                       sizeof(BlowerData), len);
       }
       break;
 
+    case MSG_ALERT_FLAG:
+      if (len == sizeof(AlertFlag)) {
+        AlertFlag alertPacket;
+        memcpy(&alertPacket, data, sizeof(AlertFlag));
+        Serial.printf("\n[Radio Link] AlertFlag received: %s\n",
+                      alertPacket.alert ? "true" : "false");
+        // alertFlag already set by MSG_BLOWER_STATE — no action needed here
+      }
+      break;
+
     case MSG_BME280:
-      if (len == sizeof(BmeData)) {
-        BmeData bmePacket;
-        memcpy(&bmePacket, data, sizeof(BmeData));
+      if (len == sizeof(BME280Data)) {
+        BME280Data bmePacket;
+        memcpy(&bmePacket, data, sizeof(BME280Data));
         globalTemp     = bmePacket.temperature;
         globalHumidity = bmePacket.humidity;
         globalPressure = bmePacket.pressure;
-        Serial.printf("\n[Radio Link] BME280 Update Caught -> Temp: %.2f F, Hum: %.1f%%, Pres: %.2f hPa\n",
+        Serial.printf("\n[Radio Link] BME280 Update -> Temp: %.2f F  Hum: %.1f%%  Pres: %.2f hPa\n",
                       globalTemp, globalHumidity, globalPressure);
       } else {
-        Serial.printf("\n⚠️ Size Mismatch for BME280 Packet: Expected %d, got %d bytes\n",
-                      sizeof(BmeData), len);
+        Serial.printf("\n⚠️ Size Mismatch — BmeData: Expected %d got %d bytes\n",
+                      sizeof(BME280Data), len);
       }
       break;
 
     default:
-      Serial.printf("\n⚠️ Unknown Data Header Byte: %d\n", data[0]);
+      Serial.printf("\n⚠️ Unknown packet type: %d\n", data[0]);
       break;
   }
 }
 
 // ─── Setup ───────────────────────────────────────────────────────────────────
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
   delay(1000);
   Serial.println("Heating Monitor - Central Dual Receiver");
 
   Wire.begin();
 
   WiFi.mode(WIFI_MODE_APSTA);
+  WiFi.setSleep(WIFI_PS_NONE);
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(300);
     Serial.print(".");
   }
   Serial.println("\nWiFi Infrastructure Connected.");
+  Serial.println("Receiver MAC: " + WiFi.macAddress());
+  Serial.printf("WiFi Channel: %d\n", WiFi.channel());
 
   initNTP();
   initMCP9808();
@@ -362,15 +370,28 @@ void setup() {
 
   secondTicker.attach(1, countSecondsISR);
 
+  // ── ESP-NOW init — once only ──────────────────────────────────────────────
   if (!ESP_NOW.begin()) {
     Serial.println("ESP-NOW Engine Failed to Start");
     return;
   }
+  Serial.println("ESP-NOW init OK");
+  Serial.printf("sizeof(BlowerData)=%d  sizeof(AlertFlag)=%d  sizeof(BME280Data)=%d\n",
+                sizeof(BlowerData), sizeof(AlertFlag), sizeof(BME280Data));
 
-  if (!blowerNode.add_to_system()) Serial.println("Failed to bind Furnace Blower Node");
-  if (!bmeNode.add_to_system())    Serial.println("Failed to bind BME280 Node");
+  if (!blowerNode.add_to_system()) {
+    Serial.println("Failed to bind Blower Node");
+  } else {
+    Serial.println("Blower node bound OK");
+  }
 
-  Serial.println("Receiver listening for Blower and BME280... Setup complete.");
+  if (!bmeNode.add_to_system()) {
+    Serial.println("Failed to bind BME280 Node");
+  } else {
+    Serial.println("BME280 node bound OK");
+  }
+
+  Serial.println("Receiver listening... Setup complete.");
 }
 
 // ─── Loop State Machine ───────────────────────────────────────────────────────
@@ -378,38 +399,36 @@ void loop() {
   ftpSrv.handleFTP();
 
   // ── Gatekeeper: alertFlag handler ────────────────────────────────────────
- if (alertFlag) {
+  if (alertFlag) {
     alertFlag = false;
 
     Serial.println("[ESP-NOW] Sending alert to BME280 node...");
     bool sent = bmeNode.sendAlert(true);
     Serial.printf("[ESP-NOW] Alert send: %s\n", sent ? "OK" : "FAILED");
-    delay(2000);                                              // ← 2000ms
-    Serial.printf("[DIAG] globalTemp after wait: %.2f\n", globalTemp);
+    delay(1000);
 
     float mcpTempF = readMCP9808();
     sensordata.insideTemp   = mcpTempF;
     sensordata.registerTemp = mcpTempF;
     sensordata.outsideTemp  = globalTemp;
-    sensordata.thermostat   = thermostatSetpoint;;
+    sensordata.thermostat   = thermostatSetpoint;
 
     Serial.printf("[MCP9808] Inside/Register Temp: %.2f °F\n", mcpTempF);
 
     getDateTime();
-    sendData(alertFlag);
     displayData();
     logData();
     sendGoogleSheetsData();
     googleSheetsSent = true;
   }
 
-  // ── Reset counters after Google Sheet send ────────────────────────────────
+  // ── Reset after pipeline ──────────────────────────────────────────────────
   if (googleSheetsSent) {
     elapsedMinutes   = 0;
     googleSheetsSent = false;
   }
 
-  // ── One-second block — midnight reset only ────────────────────────────────
+  // ── One-second — midnight reset ───────────────────────────────────────────
   if (oneSecondElapsed) {
     oneSecondElapsed = false;
 
@@ -429,9 +448,9 @@ void loop() {
 // ─── Google Sheets Bridge ─────────────────────────────────────────────────────
 void sendGoogleSheetsData() {
   sendDataToServer(dtStamp,
-                   sensordata.outsideTemp,    // BME280 outside
-                   sensordata.insideTemp,     // MCP9808 inside
-                   sensordata.registerTemp,   // MCP9808 ambient/register
+                   sensordata.outsideTemp,
+                   sensordata.insideTemp,
+                   sensordata.registerTemp,
                    thermostatSetpoint,
                    elapsedMinutes,
                    dailyTotalMinutes);
@@ -446,7 +465,6 @@ void sendDataToServer(String updateTime, float outT, float inT, float regT,
 
   WiFiClientSecure secureClient;
   secureClient.setInsecure();
-
   HTTPClient http;
 
   String data = "?lastUpdate="        + urlEncode(updateTime)
@@ -458,27 +476,22 @@ void sendDataToServer(String updateTime, float outT, float inT, float regT,
               + "&dailyTotalMinutes=" + String(dailyM, 2);
 
   String urlFinal = googleURL + data;
-
-  Serial.println("\n[HTTP] Connection pipeline opened...");
-  Serial.println("[HTTP] Target: " + urlFinal);
+  Serial.println("\n[HTTP] Target: " + urlFinal);
 
   if (http.begin(secureClient, urlFinal)) {
     http.addHeader("Content-Type", "application/x-www-form-urlencoded");
     http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
     http.setTimeout(10000);
-
     int httpCode = http.GET();
     Serial.printf("[HTTP] Status Code: %d\n", httpCode);
-
     if (httpCode > 0) {
-      String payload = http.getString();
-      Serial.println("[HTTP] Response: " + payload);
+      Serial.println("[HTTP] Response: " + http.getString());
     } else {
       Serial.printf("[HTTP] Error: %s\n", http.errorToString(httpCode).c_str());
     }
     http.end();
   } else {
-    Serial.println("⚠️ Secure connection failed to initialize.");
+    Serial.println("⚠️ Secure connection failed.");
   }
 }
 
@@ -509,4 +522,3 @@ void displayData()          {}
 void disabledailyCooling()  {}
 void resetDailyStats()      {}
 void temperatureInterrupt() {}
-
