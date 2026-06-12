@@ -83,7 +83,7 @@ and gives much better control than a standard screwdriver.
 
 ## Google Apps Script Setup
 
-1. In Google Drive, create a new Google Sheet.
+1. In Google Shhets, create a new Google Sheet.
 2. Note the **Sheet ID** from the URL:
    `https://docs.google.com/spreadsheets/d/`**`<YOUR_SHEET_ID>`**`/edit`
 3. Open the Script Editor: **Extensions → Apps Script**.
