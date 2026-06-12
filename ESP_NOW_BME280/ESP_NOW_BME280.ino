@@ -1,4 +1,4 @@
-/* Heating System Monitor  
+/* Heating System Monitor III 
    ESP_NOW_BME280.ino   
    June 6, 2026 
    ESP Now, Verified latest Arduino Core 3.3.10 
@@ -13,8 +13,8 @@
 #include <WiFiUdp.h>
 
 // WiFi credentials
-const char *ssid = "R2D2";
-const char *password = "Sky7388500";
+const char *ssid = "ssid";
+const char *password = "password";
 
 volatile bool alertFlag = false;
 
