@@ -6,7 +6,7 @@
    Calibrated: OFF variance ~3.7-7.3 | ON variance ~300-500+ | Threshold: 20.0
    Elapsed time computed via NTP difftime() — no secondsCounter drift
    On OFF confirmation: sends MSG_BLOWER_STATE then MSG_ALERT_FLAG to receiver
-   FTP default user:  admin  password admin
+   FTP default user:  admin  password:  admin
 */
 
 #include <Arduino.h>
