@@ -88,7 +88,7 @@ and gives much better control than a standard screwdriver.
    `https://docs.google.com/spreadsheets/d/`**`<YOUR_SHEET_ID>`**`/edit`
 3. Open the Script Editor: **Extensions → Apps Script**.
 4. Delete the default `myFunction()` stub entirely.
-5. Copy the full contents of `Code.gs` from this repository.
+5. Copy the full text contents of `Code.gs` from this repository.
 6. Paste into the Script Editor.
 7. Replace the placeholder Sheet ID in the script with the Sheet ID noted in Step 2.
 8. **Save** (Ctrl+S or the save icon).
