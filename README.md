@@ -26,16 +26,16 @@ local LittleFS log file and a perpetual Google Sheet (month-to-month, year-to-ye
 ## Hardware
 
 ### Receiver Node (HeatingMonitor_Receiver)
-- ESP32 Dev Module
+- ESP32 DevKit V1 Module
 - MCP9808 temperature sensor (I2C address 0x18) — register/inside temperature
 - Connects to Wi-Fi and Google Sheets via HTTP POST
 
 ### BME280 Node (ESP_NOW_BME280)
-- ESP32 Dev Module
+- ESP32 DevKit V1v Module
 - BME280 sensor — temperature, humidity, barometric pressure
 
 ### Blower Node (ESP_NOW_Blower)
-- ESP32 Dev Module
+- ESP32 DevKit V1 Module
 - KY-038 microphone module — acoustical blower detection
 
 ---
@@ -47,7 +47,7 @@ local LittleFS log file and a perpetual Google Sheet (month-to-month, year-to-ye
 | Channel         | 11                |
 | Blower Node MAC | E4:65:B8:20:20:A0 |
 | BME280 Node MAC | E4:65:B8:25:42:F8 |
-| Arduino Core    | 3.3.10            |
+| ESP32 Core    | 3.3.10            |
 | Wi-Fi Mode      | WIFI_MODE_APSTA   |
 
 > **Note:** MAC addresses shown are examples from this build. Replace with the actual MAC addresses
