@@ -1,7 +1,7 @@
 /* Heating System Monitor III
-   ESP_NOW_Receeeiver.ino
-   June 2026
-   ESP-NOW,  ESP32 Core 3.3.10 
+   ESP_NOW_Receeeiver.ino with temperature Offset
+   June 12,2026
+   ESP32_-NOW,  ESP32 Core 3.3.10 
    Receives MSG_BLOWER_STATE from ESP_NOW_Blower node
    Receives MSG_BME280 from ESP_NOW_BME280 node
    Sends MSG_ALERT_FLAG to BME280 node to request outside temp
@@ -20,11 +20,11 @@
 #include <HTTPClient.h>
 #include <Ticker.h>
 
-const char* ssid     = "ssid";
-const char* password = "password";
+const char* ssid     = "R2D22";
+const char* password = "Sky7388500";
 
 // ─── GOOGLE DEPLOYMENT ID ────────────────────────────────────────────────────
-const String googleDeploymentID = "Rremoved for security";
+const String googleDeploymentID = "AKfycbwXzMgSQXMz96mz-a7ZeN6b3Yk_IfjqBgnnPcxp3zILSZLA0XPDDVF1FjewD6i-t4rd";
 const String googleURL          = "https://script.google.com/macros/s/" + googleDeploymentID + "/exec";
 
 // ─── MCP9808 Direct Wire Register Definitions ────────────────────────────────
@@ -34,6 +34,14 @@ const String googleURL          = "https://script.google.com/macros/s/" + google
 #define MCP9808_REG_LOWER 0x03
 #define MCP9808_REG_CRIT  0x04
 #define MCP9808_REG_AMB   0x05
+
+// ─────────────────────────────────────────────
+// MCP9808 Temperature Calibration
+// Reference: Pak HOLD DMM HP-770HD reads 76.00 °F
+// MCP9808 raw reading: 82.29 °F  (same location)
+// Offset applied to MCP9808 temperature output
+// ─────────────────────────────────────────────
+const float MCP9808_TEMP_CAL_OFFSET_F = -6.29;
 
 const float LOW_TEMP_F  = 65.0;
 const float HIGH_TEMP_F = 74.0;
@@ -254,7 +262,12 @@ float readMCP9808() {
   int16_t raw = ((int16_t)msb << 8) | lsb;
   if (negative) raw -= 4096;
   float tempC = raw / 16.0;
-  return (tempC * 9.0 / 5.0) + 32.0;
+  float tempF = (tempC * 9.0 / 5.0) + 32.0;
+
+  // Apply calibration offset — reference: HP-770HD DMM thermometer
+  tempF += MCP9808_TEMP_CAL_OFFSET_F;
+
+  return tempF;
 }
 
 // ─── URL Encoder ─────────────────────────────────────────────────────────────
@@ -343,9 +356,9 @@ void processIncomingPacket(const uint8_t *data, int len) {
 
 // ─── Setup ───────────────────────────────────────────────────────────────────
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(9600);
   delay(1000);
-  Serial.println("Heating Monitor - Central Dual Receiver");
+  Serial.println("\n\nHeating System Monitor III - ESP_NOW_Receiver.ino\n");
 
   Wire.begin();
 
