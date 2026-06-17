@@ -37,7 +37,7 @@ const String googleURL          = "https://script.google.com/macros/s/" + google
 
 // ─────────────────────────────────────────────
 // MCP9808 Temperature Calibration
-// Reference: Pak HOLD DMM HP-770HD reads 76.00 °F
+// Reference: Peak HOLD DMM HP-770HD reads 76.00 °F
 // MCP9808 raw reading: 82.29 °F  (same location)
 // Offset applied to MCP9808 temperature output
 // ─────────────────────────────────────────────
