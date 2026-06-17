@@ -20,11 +20,11 @@
 #include <HTTPClient.h>
 #include <Ticker.h>
 
-const char* ssid     = "R2D22";
-const char* password = "Sky7388500";
+const char* ssid     = "ssid";
+const char* password = "password";
 
 // ─── GOOGLE DEPLOYMENT ID ────────────────────────────────────────────────────
-const String googleDeploymentID = "AKfycbwXzMgSQXMz96mz-a7ZeN6b3Yk_IfjqBgnnPcxp3zILSZLA0XPDDVF1FjewD6i-t4rd";
+const String googleDeploymentID = "removed for security";
 const String googleURL          = "https://script.google.com/macros/s/" + googleDeploymentID + "/exec";
 
 // ─── MCP9808 Direct Wire Register Definitions ────────────────────────────────
