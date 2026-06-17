@@ -1,7 +1,7 @@
 /* Heating System Monitor III 
-   ESP_NOW_BME280.ino   
-   June 12, 2026 
-   ESP Now, Verified latest Arduino Core 3.3.10 
+   ESP32_NOW_BME280.ino with temperature offset
+   June 17, 2026 
+   ESP Now, Verified latest ESP32  ArduinoCore 3.3.10 
 */
 
 
@@ -16,6 +16,14 @@
 const char *ssid = "ssid";
 const char *password = "password";
 
+// ─────────────────────────────────────────────
+// BME280 Temperature Calibration
+// Reference: Pak HOLD DMM HP-770HD reads 76.00 °F
+// BME280 raw reading: 83.93 °F  (same location)
+// Offset applied to BME280 temperature output
+// ─────────────────────────────────────────────
+const float TEMP_CAL_OFFSET_F = -7.93;
+
 volatile bool alertFlag = false;
 
 BME280I2C bme;
@@ -23,7 +31,7 @@ BME280I2C bme;
 // Master MAC address
 uint8_t masterAddress[] = { 0x3C, 0xE9, 0x0E, 0x84, 0xEE, 0x80 };
 
-#define CHANNEL 11
+#define CHANNEL 0
 
 String macAddr = WiFi.macAddress();
 #define SEALEVELPRESSURE_HPA (1013.25)
@@ -120,7 +128,7 @@ void setup();
 void loop();
 void BME280() {
 
-float temp = NAN, hum = NAN, pres = NAN;
+  float temp = NAN, hum = NAN, pres = NAN;
 
   BME280::TempUnit tempUnit(BME280::TempUnit_Fahrenheit);
   BME280::PresUnit presUnit(BME280::PresUnit_hPa);
@@ -132,6 +140,9 @@ float temp = NAN, hum = NAN, pres = NAN;
     Serial.println("Error reading sensor telemetry from BME280 hardware.");
     return;
   }
+
+  // Apply calibration offset — reference: HP-770HD DMM thermometer
+  temp += TEMP_CAL_OFFSET_F;
 
   sensorData.type = MSG_BME280;
   sensorData.temp = temp;
@@ -161,7 +172,7 @@ void setup() {
   Serial.begin(9600);
   while (!Serial) {};
 
-  Serial.println("\nHeating System Monitor - Sender Core 3.3.10 Production\n");
+  Serial.println("\n\nHeating System Monitor III --ESP_NOW_BME280_Offset.ino Production\n");
 
   WiFi.mode(WIFI_MODE_APSTA); // Required for simultaneous operation
   WiFi.begin(ssid, password);
