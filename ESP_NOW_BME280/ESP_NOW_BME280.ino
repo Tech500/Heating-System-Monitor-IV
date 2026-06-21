@@ -1,7 +1,7 @@
 /* Heating System Monitor III 
-   ESP32_NOW_BME280.ino with temperature offset
-   June 17, 2026 
-   ESP Now, Verified latest ESP32  ArduinoCore 3.3.10 
+   ESP32_NOW_BME280.ino   
+   June 12, 2026 
+   ESP Now, Verified latest ESP32 Core 3.3.10 
 */
 
 
@@ -13,8 +13,8 @@
 #include <WiFiUdp.h>
 
 // WiFi credentials
-const char *ssid = "ssid";
-const char *password = "password";
+const char *ssid = "R2D22";
+const char *password = "Sky7388500";
 
 // ─────────────────────────────────────────────
 // BME280 Temperature Calibration
@@ -31,7 +31,7 @@ BME280I2C bme;
 // Master MAC address
 uint8_t masterAddress[] = { 0x3C, 0xE9, 0x0E, 0x84, 0xEE, 0x80 };
 
-#define CHANNEL 0
+#define CHANNEL 11
 
 String macAddr = WiFi.macAddress();
 #define SEALEVELPRESSURE_HPA (1013.25)
@@ -172,7 +172,7 @@ void setup() {
   Serial.begin(9600);
   while (!Serial) {};
 
-  Serial.println("\n\nHeating System Monitor III --ESP_NOW_BME280_Offset.ino Production\n");
+  Serial.println("\nHeating System Monitor - Sender Core 3.3.10 Production\n");
 
   WiFi.mode(WIFI_MODE_APSTA); // Required for simultaneous operation
   WiFi.begin(ssid, password);
