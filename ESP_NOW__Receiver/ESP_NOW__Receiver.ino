@@ -1,5 +1,5 @@
 /* Heating System Monitor III
-   ESP_NOW_Receeeiver.ino with temperature Offset
+   ESP_NOW_Receeeiver.ino
    June 17,2026
    ESP32_-NOW,  ESP32 Core 3.3.10 
    Receives MSG_BLOWER_STATE from ESP_NOW_Blower node
@@ -20,11 +20,11 @@
 #include <HTTPClient.h>
 #include <Ticker.h>
 
-const char* ssid     = "ssid";
-const char* password = "password";
+const char* ssid     = "R2D2";
+const char* password = "Sky7388500";
 
 // ─── GOOGLE DEPLOYMENT ID ────────────────────────────────────────────────────
-const String googleDeploymentID = "removed for security";
+const String googleDeploymentID = "AKfycbwXzMgSQXMz96mz-a7ZeN6b3Yk_IfjqBgnnPcxp3zILSZLA0XPDDVF1FjewD6i-t4rd";
 const String googleURL          = "https://script.google.com/macros/s/" + googleDeploymentID + "/exec";
 
 // ─── MCP9808 Direct Wire Register Definitions ────────────────────────────────
@@ -37,7 +37,7 @@ const String googleURL          = "https://script.google.com/macros/s/" + google
 
 // ─────────────────────────────────────────────
 // MCP9808 Temperature Calibration
-// Reference: Peak HOLD DMM HP-770HD reads 76.00 °F
+// Reference: Pak HOLD DMM HP-770HD reads 76.00 °F
 // MCP9808 raw reading: 82.29 °F  (same location)
 // Offset applied to MCP9808 temperature output
 // ─────────────────────────────────────────────
