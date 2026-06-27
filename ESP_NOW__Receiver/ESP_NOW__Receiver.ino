@@ -1,14 +1,38 @@
-/* Heating System Monitor III
-   ESP_NOW_Receeeiver.ino
-   June 17,2026
-   ESP32_-NOW,  ESP32 Core 3.3.10 
+/* Heating System Monitor IV
+   ESP_NOW_Receeeiver.ino with temperature Offset
+   June 27,2026
+   ESP32_-NOW,  ESP32 Core 3.3.10
    Receives MSG_BLOWER_STATE from ESP_NOW_Blower node
    Receives MSG_BME280 from ESP_NOW_BME280 node
    Sends MSG_ALERT_FLAG to BME280 node to request outside temp
+
+   --- Updated June 20, 2026 ---
+   Inside sensing changed from MCP9808 (direct register I2C) to BME280I2C library.
+   Adds insideHumidity to Google Sheets logging; removes registerTemp column.
+
+   --- Updated June 20, 2026 (cont.) ---
+   Adds outside/inside pressure capture and diff (outsidePressure - insidePressure).
+   Fixes read-gate: was isnan(temp)||isnan(hum), which permanently rejects readings
+   on the interim HW-611/BMP280 since it has no humidity element (hum always NaN).
+   Now gates on temp/pressure only; humidity passes through as NaN.
+
+   --- Updated June 25, 2026 ---
+   Original HW-394 receiver board replaced -- defective 3.3V rail (2.04V measured),
+   causing corrupted I2C reads and frozen BME280 output.
+   Replacement HW-394: I2C reassigned to D4 (SDA/GPIO4) and D5 (SCL/GPIO5).
+   BME280 inside temp calibration offset updated to -2.51F (ref: HP-770HD DMM).
+   Note: re-verify offset once sensor is in permanent installed location.
+   ESP32 Core downgraded to 2.0.17 to resolve BME280 library I2C compatibility issues.
+   Pressure converted hPa->inHg (x 0.02953) for Serial, LittleFS, and Sheets POST.
+   Absolute pressure converted to sea-level relative using temperature-compensated
+   hypsometric formula (toSeaLevelHPa) before inHg conversion.
+   Pressure diff remains in absolute hPa converted to inHg -- both sensors same elevation.
+   Internal math remains in hPa throughout.
 */
 
 #include <Arduino.h>
 #include <Wire.h>
+#include <BME280I2C.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <esp_wifi.h>
@@ -20,28 +44,25 @@
 #include <HTTPClient.h>
 #include <Ticker.h>
 
-const char* ssid     = "R2D2";
-const char* password = "Sky7388500";
+const char* ssid     = "ssid";
+const char* password = "password";
 
 // ─── GOOGLE DEPLOYMENT ID ────────────────────────────────────────────────────
-const String googleDeploymentID = "AKfycbwXzMgSQXMz96mz-a7ZeN6b3Yk_IfjqBgnnPcxp3zILSZLA0XPDDVF1FjewD6i-t4rd";
+const String googleDeploymentID = "removed for security";
 const String googleURL          = "https://script.google.com/macros/s/" + googleDeploymentID + "/exec";
 
-// ─── MCP9808 Direct Wire Register Definitions ────────────────────────────────
-#define MCP9808_ADDR      0x18
-#define MCP9808_REG_CFG   0x01
-#define MCP9808_REG_UPPER 0x02
-#define MCP9808_REG_LOWER 0x03
-#define MCP9808_REG_CRIT  0x04
-#define MCP9808_REG_AMB   0x05
+// ─────────────────────────────────────────────
+// BME280 (Inside) — replaces MCP9808
+// Default I2C address 0x76, same library as outside BME280 node
+// ─────────────────────────────────────────────
+BME280I2C bmeInside;
 
 // ─────────────────────────────────────────────
-// MCP9808 Temperature Calibration
-// Reference: Pak HOLD DMM HP-770HD reads 76.00 °F
-// MCP9808 raw reading: 82.29 °F  (same location)
-// Offset applied to MCP9808 temperature output
+// BME280 (Inside) Temperature Calibration
+// TODO: Re-calibrate against HP-770HD DMM reference once installed in place
+// Offset applied to BME280 (inside) temperature output
 // ─────────────────────────────────────────────
-const float MCP9808_TEMP_CAL_OFFSET_F = -6.29;
+const float BME280_INSIDE_TEMP_CAL_OFFSET_F = -5.35;
 
 const float LOW_TEMP_F  = 65.0;
 const float HIGH_TEMP_F = 74.0;
@@ -96,11 +117,14 @@ struct __attribute__((packed)) AlertFlag {
 struct SensorRegisters {
   float outsideTemp;
   float insideTemp;
-  float registerTemp;
+  float insideHumidity;
   float thermostat;
   float lastEventMinutes;
   float dailyTotalMinutes;
   float lastRecordedMinute;
+  float outsidePressure;
+  float insidePressure;
+  float pressureDiffHPa;   // outsidePressure - insidePressure
 };
 SensorRegisters sensordata;
 
@@ -165,18 +189,31 @@ bool blowerIsOn        = false;
 bool alertFlag         = false;
 bool googleSheetsSent  = false;
 
-double elapsedMinutes    = 0.0;
-double dailyTotalMinutes = 0.0;
+double elapsedMinutes                    = 0.0;
+RTC_DATA_ATTR double dailyTotalMinutes   = 0.0;  // survives soft reset/crash; clears on power-on
 
 float globalTemp         = 0.0;
 float globalHumidity     = 0.0;
 float globalPressure     = 0.0;
-float thermostatSetpoint = 72.0;
+float thermostatSetpoint = 74.0;
 
 // ─── Forward Declarations ─────────────────────────────────────────────────────
+// ─── Elevation / Sea-Level Pressure Conversion ───────────────────────────────
+// Station elevation: 809 ft = 246.6 m
+// Converts absolute BME280 pressure (hPa) to sea-level relative pressure (hPa)
+// using temperature-compensated hypsometric formula.
+#define STATION_ELEVATION_M 246.6
+
+float toSeaLevelHPa(float absoluteHPa, float tempF) {
+  float tempC = (tempF - 32.0) / 1.8;
+  float tempK = tempC + 273.15;
+  return absoluteHPa * exp(9.80665 * STATION_ELEVATION_M / (287.05 * tempK));
+}
+
 void sendGoogleSheetsData();
-void sendDataToServer(String updateTime, float outT, float inT, float regT,
-                      float therm, double eventM, double dailyM);
+void sendDataToServer(String updateTime, float outT, float inT, float inHum,
+                      float therm, double eventM, double dailyM,
+                      float outP, float inP, float diffP);
 void updateHeatingData();
 void displayData();
 void logData();
@@ -185,8 +222,8 @@ void resetDailyStats();
 void temperatureInterrupt();
 void initNTP();
 String getDateTime();
-void initMCP9808();
-float readMCP9808();
+void initBME280Inside();
+void readBME280Inside(float &tempF, float &humidity, float &pressureHPa);
 String urlEncode(String str);
 
 // ─── NTP Init ────────────────────────────────────────────────────────────────
@@ -218,56 +255,39 @@ String getDateTime() {
   return dtStamp;
 }
 
-// ─── MCP9808 ─────────────────────────────────────────────────────────────────
-void initMCP9808() {
-  Wire.beginTransmission(MCP9808_ADDR);
-  Wire.write(MCP9808_REG_CFG);
-  Wire.write(0x00);
-  Wire.write(0x08);
-  Wire.endTransmission();
-
-  int16_t upper = (int16_t)(HIGH_TEMP_C * 4) << 2;
-  Wire.beginTransmission(MCP9808_ADDR);
-  Wire.write(MCP9808_REG_UPPER);
-  Wire.write((uint8_t)(upper >> 8));
-  Wire.write((uint8_t)(upper & 0xFF));
-  Wire.endTransmission();
-
-  int16_t lower = (int16_t)(LOW_TEMP_C * 4) << 2;
-  Wire.beginTransmission(MCP9808_ADDR);
-  Wire.write(MCP9808_REG_LOWER);
-  Wire.write((uint8_t)(lower >> 8));
-  Wire.write((uint8_t)(lower & 0xFF));
-  Wire.endTransmission();
-
-  int16_t crit = (int16_t)(23.0 * 4) << 2;
-  Wire.beginTransmission(MCP9808_ADDR);
-  Wire.write(MCP9808_REG_CRIT);
-  Wire.write((uint8_t)(crit >> 8));
-  Wire.write((uint8_t)(crit & 0xFF));
-  Wire.endTransmission();
-
-  Serial.printf("MCP9808 Init: LOW=%.2f°C  HIGH=%.2f°C\n", LOW_TEMP_C, HIGH_TEMP_C);
+// ─── BME280 (Inside) ─────────────────────────────────────────────────────────
+void initBME280Inside() {
+  while (!bmeInside.begin()) {
+    Serial.println("Could not establish communication with inside BME280 sensor.");
+    delay(1000);
+  }
+  Serial.println("Inside BME280 sensor initialized.");
 }
 
-float readMCP9808() {
-  Wire.beginTransmission(MCP9808_ADDR);
-  Wire.write(MCP9808_REG_AMB);
-  Wire.endTransmission();
-  Wire.requestFrom(MCP9808_ADDR, 2);
-  uint8_t msb = Wire.read();
-  uint8_t lsb = Wire.read();
-  bool negative = (msb & 0x10);
-  msb &= 0x0F;
-  int16_t raw = ((int16_t)msb << 8) | lsb;
-  if (negative) raw -= 4096;
-  float tempC = raw / 16.0;
-  float tempF = (tempC * 9.0 / 5.0) + 32.0;
+void readBME280Inside(float &tempF, float &humidity, float &pressureHPa) {
+  float temp = NAN, hum = NAN, pres = NAN;
+
+  BME280::TempUnit tempUnit(BME280::TempUnit_Fahrenheit);
+  BME280::PresUnit presUnit(BME280::PresUnit_hPa);
+
+  bmeInside.read(pres, temp, hum, tempUnit, presUnit);
+
+  // Gate on temp/pressure only -- humidity is legitimately NaN on the
+  // interim HW-611/BMP280 and must not block an otherwise valid reading.
+  if (isnan(temp) || isnan(pres)) {
+    Serial.println("Error reading inside BME280 sensor telemetry.");
+    tempF       = NAN;
+    humidity    = NAN;
+    pressureHPa = NAN;
+    return;
+  }
 
   // Apply calibration offset — reference: HP-770HD DMM thermometer
-  tempF += MCP9808_TEMP_CAL_OFFSET_F;
+  temp += BME280_INSIDE_TEMP_CAL_OFFSET_F;
 
-  return tempF;
+  tempF       = temp;
+  humidity    = hum;   // NAN on BMP280 (HW-611) until Monday's BME280 swap
+  pressureHPa = pres;
 }
 
 // ─── URL Encoder ─────────────────────────────────────────────────────────────
@@ -340,8 +360,8 @@ void processIncomingPacket(const uint8_t *data, int len) {
         globalTemp     = bmePacket.temperature;
         globalHumidity = bmePacket.humidity;
         globalPressure = bmePacket.pressure;
-        Serial.printf("\n[Radio Link] BME280 Update -> Temp: %.2f F  Hum: %.1f%%  Pres: %.2f hPa\n",
-                      globalTemp, globalHumidity, globalPressure);
+        Serial.printf("\n[Radio Link] BME280 Update -> Temp: %.2f F  Hum: %.1f%%  Pres: %.4f inHg\n",
+                      globalTemp, globalHumidity, globalPressure * 0.02953);
       } else {
         Serial.printf("\n⚠️ Size Mismatch — BmeData: Expected %d got %d bytes\n",
                       sizeof(BME280Data), len);
@@ -360,7 +380,9 @@ void setup() {
   delay(1000);
   Serial.println("\n\nHeating System Monitor III - ESP_NOW_Receiver.ino\n");
 
-  Wire.begin();
+  // HW-394 replacement board: D4=SDA(GPIO4), D5=SCL(GPIO5)
+  // Original board had defective 3.3V rail (2.04V), causing frozen I2C reads.
+  Wire.begin(4, 5);
 
   WiFi.mode(WIFI_MODE_APSTA);
   WiFi.setSleep(WIFI_PS_NONE);
@@ -374,7 +396,7 @@ void setup() {
   Serial.printf("WiFi Channel: %d\n", WiFi.channel());
 
   initNTP();
-  initMCP9808();
+  initBME280Inside();
 
   bool fsok = LittleFS.begin(true);
   Serial.printf("FS init: %s\n", fsok ? "ok" : "fail!");
@@ -420,13 +442,22 @@ void loop() {
     Serial.printf("[ESP-NOW] Alert send: %s\n", sent ? "OK" : "FAILED");
     delay(1000);
 
-    float mcpTempF = readMCP9808();
-    sensordata.insideTemp   = mcpTempF;
-    sensordata.registerTemp = mcpTempF;
-    sensordata.outsideTemp  = globalTemp;
-    sensordata.thermostat   = thermostatSetpoint;
+    float insideTempF = NAN, insideHumidity = NAN, insidePressureHPa = NAN;
+    readBME280Inside(insideTempF, insideHumidity, insidePressureHPa);
+    sensordata.insideTemp      = insideTempF;
+    sensordata.insideHumidity  = insideHumidity;
+    sensordata.outsideTemp     = globalTemp;
+    sensordata.thermostat      = thermostatSetpoint;
+    sensordata.outsidePressure = globalPressure;
+    sensordata.insidePressure  = insidePressureHPa;
+    sensordata.pressureDiffHPa = globalPressure - insidePressureHPa;
 
-    Serial.printf("[MCP9808] Inside/Register Temp: %.2f °F\n", mcpTempF);
+    Serial.printf("[BME280 Inside] Temp: %.2f °F  Hum: %.2f %%  Pres: %.4f inHg\n",
+                  insideTempF, insideHumidity, insidePressureHPa * 0.02953);
+    Serial.printf("[Pressure] Outside: %.4f inHg | Inside: %.4f inHg | Diff(out-in): %.4f inHg\n",
+                  toSeaLevelHPa(sensordata.outsidePressure, sensordata.outsideTemp) * 0.02953,
+                  toSeaLevelHPa(sensordata.insidePressure,  sensordata.insideTemp)  * 0.02953,
+                  sensordata.pressureDiffHPa * 0.02953);  // diff stays absolute
 
     getDateTime();
     displayData();
@@ -463,14 +494,18 @@ void sendGoogleSheetsData() {
   sendDataToServer(dtStamp,
                    sensordata.outsideTemp,
                    sensordata.insideTemp,
-                   sensordata.registerTemp,
+                   sensordata.insideHumidity,
                    thermostatSetpoint,
                    elapsedMinutes,
-                   dailyTotalMinutes);
+                   dailyTotalMinutes,
+                   sensordata.outsidePressure,
+                   sensordata.insidePressure,
+                   sensordata.pressureDiffHPa);
 }
 
-void sendDataToServer(String updateTime, float outT, float inT, float regT,
-                      float therm, double eventM, double dailyM) {
+void sendDataToServer(String updateTime, float outT, float inT, float inHum,
+                      float therm, double eventM, double dailyM,
+                      float outP, float inP, float diffP) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("⚠️ Sheet update blocked: Wi-Fi offline.");
     return;
@@ -483,10 +518,13 @@ void sendDataToServer(String updateTime, float outT, float inT, float regT,
   String data = "?lastUpdate="        + urlEncode(updateTime)
               + "&outsideTemp="       + String(outT, 2)
               + "&insideTemp="        + String(inT, 2)
-              + "&registerTemp="      + String(regT, 2)
+              + "&insideHumidity="    + String(inHum, 2)
               + "&thermostat="        + String(therm, 2)
               + "&elapsedMinutes="    + String(eventM, 2)
-              + "&dailyTotalMinutes=" + String(dailyM, 2);
+              + "&dailyTotalMinutes=" + String(dailyM, 2)
+              + "&outsidePressure="   + String(toSeaLevelHPa(outP, sensordata.outsideTemp) * 0.02953, 4)
+              + "&insidePressure="    + String(toSeaLevelHPa(inP,  sensordata.insideTemp)  * 0.02953, 4)
+              + "&pressureDiff="      + String(diffP * 0.02953, 4);  // diff stays absolute
 
   String urlFinal = googleURL + data;
   Serial.println("\n[HTTP] Target: " + urlFinal);
@@ -513,19 +551,22 @@ void logData() {
   if (!LittleFS.exists("/log.txt")) {
     File setupFile = LittleFS.open("/log.txt", FILE_WRITE);
     if (!setupFile) return;
-    setupFile.println("Timestamp, OutsideTemp, InsideTemp, RegisterTemp, Setpoint, EventDuration, TotalRuntime");
+    setupFile.println("Timestamp, OutsideTemp, InsideTemp, InsideHumidity, Setpoint, EventDuration, TotalRuntime, OutsidePressure_inHg, InsidePressure_inHg, PressureDiff_inHg");
     setupFile.close();
   }
   File appendLog = LittleFS.open("/log.txt", FILE_APPEND);
   if (!appendLog) return;
   appendLog.print(dtStamp);
-  appendLog.print(" , Outside: ");     appendLog.print(sensordata.outsideTemp, 2);
-  appendLog.print(" F, Inside: ");     appendLog.print(sensordata.insideTemp, 2);
-  appendLog.print(" F, Register: ");   appendLog.print(sensordata.registerTemp, 2);
-  appendLog.print(" F, Thermostat: "); appendLog.print(thermostatSetpoint, 2);
-  appendLog.print(" F, Event: ");      appendLog.print(sensordata.lastEventMinutes, 2);
-  appendLog.print(", Total 24HR: ");   appendLog.print(sensordata.dailyTotalMinutes, 2);
-  appendLog.print("\n");
+  appendLog.print(" , Outside: ");      appendLog.print(sensordata.outsideTemp, 2);
+  appendLog.print(" F, Inside: ");      appendLog.print(sensordata.insideTemp, 2);
+  appendLog.print(" F, In.Humidity: "); appendLog.print(sensordata.insideHumidity, 2);
+  appendLog.print(" %, Thermostat: ");  appendLog.print(thermostatSetpoint, 2);
+  appendLog.print(" F, Event: ");       appendLog.print(sensordata.lastEventMinutes, 2);
+  appendLog.print(", Total 24HR: ");    appendLog.print(sensordata.dailyTotalMinutes, 2);
+  appendLog.print(", OutP: ");          appendLog.print(toSeaLevelHPa(sensordata.outsidePressure, sensordata.outsideTemp) * 0.02953, 4);
+  appendLog.print(" inHg, InP: ");      appendLog.print(toSeaLevelHPa(sensordata.insidePressure,  sensordata.insideTemp)  * 0.02953, 4);
+  appendLog.print(" inHg, Diff: ");     appendLog.print(sensordata.pressureDiffHPa * 0.02953, 4);
+  appendLog.print(" inHg\n");
   appendLog.close();
 }
 
