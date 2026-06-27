@@ -1,4 +1,4 @@
-const sheet_id = "1I8YJg2rJ6niNyHXX-MTjp9aYh68fHtGoeyfJ15A9JZE";
+const sheet_id = "Removed for security";
 
 const headers = ['lastUpdate', 'outsideTemp', 'insideTemp', 'insideHumidity', 'thermostat', 'elapsedMinutes', 'dailyTotalMinutes', 'outsidePressure', 'insidePressure', 'pressureDiff'];
 
