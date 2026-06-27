@@ -1,6 +1,6 @@
-const sheet_id = "See Heating System Monitor README.md";
+const sheet_id = "1I8YJg2rJ6niNyHXX-MTjp9aYh68fHtGoeyfJ15A9JZE";
 
-const headers = ['lastUpdate', 'outsideTemp', 'insideTemp', 'registerTemp', 'thermostat', 'elapsedMinutes', 'dailyTotalMinutes'];
+const headers = ['lastUpdate', 'outsideTemp', 'insideTemp', 'insideHumidity', 'thermostat', 'elapsedMinutes', 'dailyTotalMinutes', 'outsidePressure', 'insidePressure', 'pressureDiff'];
 
 const now = new Date();
 const sheetName = `${getMonthNames(now.getMonth())} ${now.getFullYear()}`;
@@ -14,16 +14,19 @@ function doGet(e) {
   var lastUpdate = e.parameter.lastUpdate || "N/A";
   var outsideTemp = e.parameter.outsideTemp ? parseFloat(e.parameter.outsideTemp) : NaN;
   var insideTemp = e.parameter.insideTemp ? parseFloat(e.parameter.insideTemp) : NaN;
-  var registerTemp = e.parameter.registerTemp ? parseFloat(e.parameter.registerTemp) : NaN;
+  var insideHumidity = e.parameter.insideHumidity ? parseFloat(e.parameter.insideHumidity) : NaN;
   var thermostat = e.parameter.thermostat ? parseFloat(e.parameter.thermostat) : NaN;
   var elapsedMinutes = e.parameter.elapsedMinutes ? parseFloat(e.parameter.elapsedMinutes) : NaN;
   var dailyTotalMinutes = e.parameter.dailyTotalMinutes ? parseFloat(e.parameter.dailyTotalMinutes) : NaN;
+  var outsidePressure = e.parameter.outsidePressure ? parseFloat(e.parameter.outsidePressure) : NaN;
+  var insidePressure = e.parameter.insidePressure ? parseFloat(e.parameter.insidePressure) : NaN;
+  var pressureDiff = e.parameter.pressureDiff ? parseFloat(e.parameter.pressureDiff) : NaN;
 
   // data = var to be appended to every row of Goole Sheet.
-  const data = [lastUpdate, outsideTemp, insideTemp, registerTemp, thermostat, elapsedMinutes, dailyTotalMinutes];
+  const data = [lastUpdate, outsideTemp, insideTemp, insideHumidity, thermostat, elapsedMinutes, dailyTotalMinutes, outsidePressure, insidePressure, pressureDiff];
 
   // Logs data to the console
-  console.log(lastUpdate, outsideTemp, insideTemp, registerTemp, thermostat, elapsedMinutes, dailyTotalMinutes);
+  console.log(lastUpdate, outsideTemp, insideTemp, insideHumidity, thermostat, elapsedMinutes, dailyTotalMinutes, outsidePressure, insidePressure, pressureDiff);
 
   //Checks for end of the month; if true creates new sheet. 
   if (isEndOfMonth(now)) {
