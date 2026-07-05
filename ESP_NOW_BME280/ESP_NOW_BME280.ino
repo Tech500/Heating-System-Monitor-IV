@@ -1,5 +1,5 @@
 /* Heating System Monitor IV 
-   ESP32_NOW_BME280_Offset.ino   
+   ESP32_NOW_BME280.ino   
    July 5, 2026 
    ESP Now, Verified latest ESP32  ArduinoCore 3.3.10 
 */
