@@ -14,7 +14,7 @@
 
 // WiFi credentials
 const char *ssid = "yourssid";
-const char *password = yourpassword";
+const char *password = "yourpassword";
 
 // ─────────────────────────────────────────────
 // BME280 Temperature Calibration
