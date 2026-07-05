@@ -8,8 +8,8 @@ Works in both cooling and heating seasons --year round!
 ## Overview
 
 Heating System Monitor IV is a three-node ESP32 system using ESP_NOW for wireless communication.
-The blower node acoustically detects HVAC blower on/off cycles using a  MPU-6050 ;popular 6-axis Inertial Measurement Unit (IMU)  module
-and variance-based thresholding. No electrical hookup to the heating system is required.
+The blower node; HVAC blower on/off cycles are detected using a  MPU-6050; popular 6-axis Inertial Measurement Unit (IMU)  module
+and variance-based thresholding. No electrical hookup to the heating/cooling system is required.
 
 What is variance-based thresholding?
 
