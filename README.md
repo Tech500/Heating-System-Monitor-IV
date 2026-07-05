@@ -1,14 +1,14 @@
-# Heating System Monitor III
+# Heating System Monitor IV  
 
-**Intensive collaboration with myself, Claude AI (Anthropic), and Gemini AI (Google).**
+**Collaboration with myself, Claude AI (Anthropic), and asistance from Gemini AI (Google).**
 
 No electrical connection to the heating system — monitors temperatures and blower run time only via acoustical detection.
 Works in both cooling and heating seasons --year round!
 
 ## Overview
 
-Heating System Monitor III is a three-node ESP32 system using ESP-NOW for wireless communication.
-The blower node acoustically detects HVAC blower on/off cycles using a KY-038 microphone module
+Heating System Monitor IV is a three-node ESP32 system using ESP_NOW for wireless communication.
+The blower node acoustically detects HVAC blower on/off cycles using a  MPU-6050 ;popular 6-axis Inertial Measurement Unit (IMU)  module
 and variance-based thresholding. No electrical hookup to the heating system is required.
 
 What is variance-based thresholding?
