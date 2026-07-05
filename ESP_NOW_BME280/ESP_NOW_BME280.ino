@@ -1,7 +1,7 @@
-/* Heating System Monitor III 
-   ESP32_NOW_BME280.ino   
-   June 12, 2026 
-   ESP Now, Verified latest ESP32 Core 3.3.10 
+/* Heating System Monitor IV 
+   ESP32_NOW_BME280_Offset.ino   
+   July 5, 2026 
+   ESP Now, Verified latest ESP32  ArduinoCore 3.3.10 
 */
 
 
@@ -13,8 +13,8 @@
 #include <WiFiUdp.h>
 
 // WiFi credentials
-const char *ssid = "R2D22";
-const char *password = "Sky7388500";
+const char *ssid = "yourssid";
+const char *password = yourpassword";
 
 // ─────────────────────────────────────────────
 // BME280 Temperature Calibration
@@ -29,9 +29,9 @@ volatile bool alertFlag = false;
 BME280I2C bme;
 
 // Master MAC address
-uint8_t masterAddress[] = { 0x3C, 0xE9, 0x0E, 0x84, 0xEE, 0x80 };
+uint8_t masterAddress[] = { 0xE4, 0x65, 0xB8, 0x20, 0xEC, 0xD8 };
 
-#define CHANNEL 11
+#define CHANNEL 0
 
 String macAddr = WiFi.macAddress();
 #define SEALEVELPRESSURE_HPA (1013.25)
@@ -126,6 +126,7 @@ void BME280();
 void updateDisplay();
 void setup();
 void loop();
+
 void BME280() {
 
   float temp = NAN, hum = NAN, pres = NAN;
@@ -172,9 +173,10 @@ void setup() {
   Serial.begin(9600);
   while (!Serial) {};
 
-  Serial.println("\nHeating System Monitor - Sender Core 3.3.10 Production\n");
+  Serial.println("\n\nHeating System Monitor IV --ESP_NOW_BME280_Offset.ino Production\n");
 
   WiFi.mode(WIFI_MODE_APSTA); // Required for simultaneous operation
+  WiFi.setSleep(WIFI_PS_NONE);
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
@@ -195,7 +197,7 @@ void setup() {
   }
   Serial.println("Master Target configuration active.");
 
-  Wire.begin(21, 22);
+  Wire.begin(21,22);
   while (!bme.begin()) {
     Serial.println("Could not establish communication with local BME280 sensor.");
     delay(1000);
