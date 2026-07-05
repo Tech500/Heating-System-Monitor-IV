@@ -1,28 +1,54 @@
-/* Heating System Monitor III
-   ESP_NOW_Blower.ino
-   June 12, 2026
-   ESP-NOW, Verified ESP32 Core 3.3.10 
-   KY-038 Raw ADC Variance Detection
-   Calibrated: OFF variance ~3.7-7.3 | ON variance ~300-500+ | Threshold: 20.0
+/* Heating System Monitor IV
+   ESP_NOW_Blowe.ino
+   July 5, 2026
+   ESP-NOW, Verified ESP32 Core 3.3.10
+   MPU-6050 Accelerometer Vector Magnitude Variance Detection
+   I2C: SDA=GPIO5  SCL=GPIO4  Address: 0x68
+   Calibrated: OFF variance ~TBD | ON variance ~TBD | Threshold: 500.0 (tune on bench)
+   OFF_CONFIRM reduced to 5 — mechanical stop is clean, no acoustic bleed
    Elapsed time computed via NTP difftime() — no secondsCounter drift
    On OFF confirmation: sends MSG_BLOWER_STATE then MSG_ALERT_FLAG to receiver
    FTP default user:  admin  password:  admin
+
+   --- CHANGE LOG (this revision) ---
+   FTP RETR timeout fix: computeVariance() was blocking for
+   SAMPLE_COUNT * SAMPLE_DELAY_MS (64*5ms = 320ms) every single loop()
+   pass, unconditionally. That 320ms blackout meant ftpSrv.handleFTP()
+   never got serviced during an active data transfer, so FTP clients
+   timed out on RETR (LIST worked fine — it's fast, doesn't span the gap).
+   Fix: call ftpSrv.handleFTP() + server.handleClient() once per sample
+   INSIDE computeVariance()'s sampling loop, so FTP is serviced every
+   ~5ms instead of going dark for 320ms. Same interleave applied to the
+   two delay(500) blocks in detectBlower() after sendData()/sendAlert(),
+   since those are the same class of blocking gap, just rarer (only on
+   ON/OFF transitions).
 */
 
 #include <Arduino.h>
+#include <Wire.h>
+#include <MPU6050.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <ESP32_NOW.h>
 #include <LittleFS.h>
 #include <FTPServer.h>
 #include <WebServer.h>
+#include <WiFiManager.h>
 #include <time.h>
 
 // ─────────────────────────────────────────────
-// WiFi & FTP Credentials
+// I2C / MPU-6050
 // ─────────────────────────────────────────────
-const char* ssid     = "ssid";
-const char* password = "password";
+// SDA = GPIO5   SCL = GPIO4
+#define SDA 5
+#define SCL 4
+
+MPU6050 mpu;
+
+// ─────────────────────────────────────────────
+// WiFi (via WiFiManager captive portal) & FTP Credentials
+// ─────────────────────────────────────────────
+WiFiManager wm;
 
 FTPServer ftpSrv(LittleFS);
 WebServer server(80);
@@ -71,7 +97,8 @@ void initNTP() {
 // ESP-NOW Configuration
 // CHANNEL 0 = match home channel dynamically
 // ─────────────────────────────────────────────
-uint8_t masterAddress[] = { 0x3C, 0xE9, 0x0E, 0x84, 0xEE, 0x80 };
+uint8_t masterAddress[] = { 0xE4, 0x65, 0xB8, 0x20, 0xEC, 0xD8 };
+                            
 #define CHANNEL 0
 
 enum MessageType : uint8_t {
@@ -93,14 +120,43 @@ struct __attribute__((packed)) AlertFlag {
 };
 
 // ─────────────────────────────────────────────
-// KY-038 Variance Detection Configuration
+// MPU-6050 Variance Detection Configuration
+//
+// Hysteresis pair, set from real mounted-furnace data
+// (07/01/2026 bench + closet sessions), replacing the original
+// single-threshold placeholder. Confirmed separation across
+// every condition tested:
+//   OFF / quiet ambient:        ~1,500 - 4,000
+//   Disposal running (10-15ft): ~2,000 - 4,600  (barely registers)
+//   Footstep/stomp shocks:      sustained 130,000+ (see ceiling note below)
+//   Blower ON, heating fan-only: ~4,500 - 9,500
+//   Blower ON, cooling mode:     ~44,000 - 114,000 (higher fan speed)
+//
+// A single threshold at 6000 caused chatter when readings hovered
+// right around that value at a state transition (observed 07/01/2026
+// evening — ON/OFF/ON flipping within 5 seconds, variance bouncing
+// 4800-7800). Hysteresis fixes this: once ON, must drop below
+// OFF_THRESHOLD to start counting toward OFF; once OFF, must rise
+// above ON_THRESHOLD to start counting toward ON. The gap between
+// the two absorbs noise that would otherwise cross a single cutoff
+// back and forth.
+//
+// NOTE: sustained shock events (stomping, drops) can read
+// 100,000+ and would currently misclassify as ON if they
+// last >= ON_CONFIRM cycles. No ceiling filter implemented
+// yet — revisit if false ON triggers are observed in practice.
+//
+// OFF_CONFIRM: 5 cycles — mechanical stop is clean.
+//   Each cycle = SAMPLE_COUNT * SAMPLE_DELAY_MS = 64 * 5ms = ~320ms
+//   5 cycles = ~1.6 seconds confirmation before declaring OFF.
+//   Increase if spurious OFF triggers observed.
 // ─────────────────────────────────────────────
-const int   ANALOG_PIN      = 34;
 const int   SAMPLE_COUNT    = 64;
 const int   SAMPLE_DELAY_MS = 5;
-const float VAR_THRESHOLD   = 20.0f;
+const float ON_THRESHOLD    = 7000.0f;  // must rise above this to start counting toward ON
+const float OFF_THRESHOLD   = 5000.0f;  // must drop below this to start counting toward OFF
 const int   ON_CONFIRM      = 3;
-const int   OFF_CONFIRM     = 90;
+const int   OFF_CONFIRM     = 5;        // reduced from 90 — clean mechanical stop
 
 // ─────────────────────────────────────────────
 // Global State Registers
@@ -139,22 +195,74 @@ void   sendAlert();
 void   checkSerial();
 float  computeVariance();
 bool   detectBlower();
+void   serviceNetwork();
 
 // ─────────────────────────────────────────────
-// Variance Computation
+// Service FTP + WebServer.
+// Called from loop() AND interleaved inside any blocking
+// section (sampling loop, post-transition delays) so neither
+// ever goes dark for more than a few ms at a time.
+// ─────────────────────────────────────────────
+// FTP burst — confirmed working at 500 on the bench.
+// Tune down if a smaller value still clears RETR cleanly —
+// lower cost per loop() pass. Suggested test sequence:
+// 500 (known good) -> 250 -> 100 -> 50, retrying FTP RETR at each.
+// If a value fails, back up to the last one that worked.
+const int FTP_BURST_COUNT = 500;
+
+void serviceNetwork() {
+  ftpSrv.handleFTP();
+  server.handleClient();
+}
+
+// ─────────────────────────────────────────────
+// FTP burst service — confirmed on the bench to clear
+// RETR transfers that the single-call-per-sample interleave
+// alone didn't fix. Call once per loop() pass (NOT nested
+// inside computeVariance()'s sampling loop — that would
+// multiply out to tens of thousands of calls per detection
+// cycle and start competing with sensor timing).
+// yield() every 50 iterations keeps the WiFi/lwIP task fed
+// so this doesn't starve the radio mid-burst.
+// ─────────────────────────────────────────────
+void ftpBurstService() {
+  for (int x = 0; x < FTP_BURST_COUNT; x++) {
+    ftpSrv.handleFTP();
+    if (x % 50 == 0) yield();
+  }
+}
+
+// ─────────────────────────────────────────────
+// MPU-6050 Vector Magnitude Variance
+// Reads raw accel X, Y, Z; computes magnitude per sample;
+// returns variance of magnitude over SAMPLE_COUNT samples.
+// Orientation-independent — no need to pick an axis.
+//
+// serviceNetwork() is called once per sample so FTP/web stay
+// responsive across the full ~320ms sampling window instead of
+// blacking out for the whole thing.
 // ─────────────────────────────────────────────
 float computeVariance() {
-  int   samples[SAMPLE_COUNT];
+  float magnitudes[SAMPLE_COUNT];
   float sum = 0.0f;
+
   for (int i = 0; i < SAMPLE_COUNT; i++) {
-    samples[i] = analogRead(ANALOG_PIN);
+    int16_t ax, ay, az, gx, gy, gz;
+    mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+    // magnitude of acceleration vector (raw int16 units)
+    float mag = sqrtf((float)ax * ax + (float)ay * ay + (float)az * az);
+    magnitudes[i] = mag;
+    sum += mag;
+
+    serviceNetwork();   // keep FTP/web alive during this sample window
+
     delay(SAMPLE_DELAY_MS);
-    sum += samples[i];
   }
+
   float mean     = sum / SAMPLE_COUNT;
   float variance = 0.0f;
   for (int i = 0; i < SAMPLE_COUNT; i++) {
-    float diff = samples[i] - mean;
+    float diff = magnitudes[i] - mean;
     variance  += diff * diff;
   }
   return variance / SAMPLE_COUNT;
@@ -225,13 +333,28 @@ void sendAlert() {
 }
 
 // ─────────────────────────────────────────────
-// Blower State Machine
+// Non-blocking replacement for delay(500) after state-transition
+// sends. Services FTP/web every 5ms instead of going dark for
+// the full 500ms in one block.
+// ─────────────────────────────────────────────
+void settleDelay(unsigned long ms) {
+  unsigned long start = millis();
+  while (millis() - start < ms) {
+    serviceNetwork();
+    delay(5);
+  }
+}
+
+// ─────────────────────────────────────────────
+// Blower State Machine — hysteresis added 07/01/2026 evening
+// to eliminate chatter observed when a single threshold sat
+// right at the boundary during a real transition.
 // ─────────────────────────────────────────────
 bool detectBlower() {
   currentVariance = computeVariance();
 
   if (!blowerOn) {
-    if (currentVariance >= VAR_THRESHOLD) {
+    if (currentVariance >= ON_THRESHOLD) {
       consecutiveOnCount++;
       consecutiveOffCount = 0;
     } else {
@@ -244,10 +367,10 @@ bool detectBlower() {
       getDateTime();
       Serial.println(">>> Blower Detected: ON  @ " + dtStamp);
       sendData(true);
-      delay(500);
+      settleDelay(500);
     }
   } else {
-    if (currentVariance < VAR_THRESHOLD) {
+    if (currentVariance < OFF_THRESHOLD) {
       consecutiveOffCount++;
       consecutiveOnCount = 0;
     } else {
@@ -266,10 +389,12 @@ bool detectBlower() {
       Serial.printf("    Elapsed: %.2f min  Daily total: %.2f min\n",
                     elapsedMinutes, dailyTotalMinutes);
 
+      logToFile(false);   // one-time OFF summary row — no more per-second OFF spam
+
       sendData(false);
-      delay(500);
+      settleDelay(500);
       sendAlert();
-      delay(500);
+      settleDelay(500);
     }
   }
   return blowerOn;
@@ -422,7 +547,8 @@ void handleStatus() {
   msg += "\nLogging: "             + String(loggingActive ? "YES" : "NO");
   msg += "\nBlower: "              + String(blowerOn ? "ON" : "OFF");
   msg += "\nVariance: "            + String(currentVariance, 4);
-  msg += "\nVAR_THRESHOLD: "       + String(VAR_THRESHOLD);
+  msg += "\nON_THRESHOLD: "        + String(ON_THRESHOLD);
+  msg += "\nOFF_THRESHOLD: "       + String(OFF_THRESHOLD);
   msg += "\nON_CONFIRM: "          + String(ON_CONFIRM);
   msg += "\nOFF_CONFIRM: "         + String(OFF_CONFIRM);
   msg += "\nC_On: "                + String(consecutiveOnCount);
@@ -443,29 +569,69 @@ void initWebServer() {
 // Setup
 // ─────────────────────────────────────────────
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(9600);
   delay(1000);
-  Serial.println("\n\n\n\nHeating System Monitor III, ESP_NOW_Blower.ino — ESP32 Core 3.3.10\n");
-  Serial.printf("VAR_THRESHOLD=%.1f  ON_CONFIRM=%d  OFF_CONFIRM=%d\n",
-                VAR_THRESHOLD, ON_CONFIRM, OFF_CONFIRM);
+  Serial.println("\n\n\n\nHeating System Monitor IV, ESP_NOW_Blower_MPU6050.ino — ESP32 Core 3.3.10\n");
+  Serial.printf("ON_THRESHOLD=%.1f  OFF_THRESHOLD=%.1f  ON_CONFIRM=%d  OFF_CONFIRM=%d\n",
+                ON_THRESHOLD, OFF_THRESHOLD, ON_CONFIRM, OFF_CONFIRM);
   Serial.println("Commands: r=rotate | d=delete all | l=list");
+
+  // I2C: SDA=GPIO5  SCL=GPIO4
+  Wire.begin(SDA, SCL);
+  mpu.initialize();
+  if (!mpu.testConnection()) {
+    Serial.println("MPU-6050 connection FAILED — check wiring");
+    while (true) delay(1000);
+  }
+  Serial.println("MPU-6050 connected OK at 0x68");
+
+  // Accelerometer range: ±2g (default) — most sensitive, best for low vibration detection
+  // If clipping observed, increase to ±4g: mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_4);
+  mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
+  Serial.println("Accel range: ±2g");
 
   initLogging();
 
-  WiFi.mode(WIFI_MODE_APSTA);
   WiFi.setSleep(WIFI_PS_NONE);
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(300);
-    Serial.print(".");
-  }
-  Serial.println("\nWiFi connected: " + WiFi.localIP().toString());
-  Serial.printf("Blower MAC: %s  Channel: %d\n",
-                WiFi.macAddress().c_str(), WiFi.channel());
+  // NOTE: deliberately NOT setting WiFi.mode(WIFI_MODE_APSTA) here —
+  // testing whether a pre-set mode is what's blocking WiFiManager's
+  // own AP ("HSM-IV-Setup") from actually broadcasting. Letting
+  // WiFiManager fully own mode-switching during autoConnect()/portal.
+  // APSTA gets re-asserted below, after WiFiManager is done, since
+  // ESP-NOW still needs STA+AP together once we're past this point.
 
-  initNTP();
+  // WiFiManager: tries saved credentials first. If it can't connect
+  // (e.g. the PMF/WPA3 association issue we were chasing manually),
+  // it spins up its own AP named "HSM-IV-Setup" — connect a phone/laptop
+  // to that, a captive portal pops up, pick R2D2, enter password there.
+  // No timeout set — this blocks indefinitely until configured, rather
+  // than the portal vanishing after N seconds before there's time to
+  // actually connect and finish the captive portal flow.
+  bool wifiOK = wm.autoConnect("HSM");
+
+  WiFi.mode(WIFI_MODE_APSTA);   // re-assert now that WiFiManager is done — ESP-NOW needs this
+
+  if (!wifiOK) {
+    Serial.println("\nWiFiManager: failed to connect / portal timed out — continuing without WiFi.");
+    Serial.println("  FTP, web server, NTP, and ESP-NOW sends will be unavailable until reconnected.");
+    Serial.println("  Reset the board and it will retry the portal on next boot.");
+  } else {
+    Serial.println("\nWiFi connected: " + WiFi.localIP().toString());
+    Serial.printf("Blower MAC: %s  Channel: %d\n",
+                  WiFi.macAddress().c_str(), WiFi.channel());
+  }
+
+  if (wifiOK) {
+    initNTP();
+  } else {
+    Serial.println("Skipping NTP sync — no WiFi.");
+  }
 
   ftpSrv.begin(F("admin"), F("admin"));
+  ftpSrv.setTimeout(30000);   // 30s instead of library default 5 min —
+                               // a dangling/half-closed FileZilla session
+                               // now clears fast instead of blocking new
+                               // connections for up to 5 minutes
   initWebServer();
 
   if (!ESP_NOW.begin()) {
@@ -487,12 +653,14 @@ void setup() {
 // ─────────────────────────────────────────────
 void loop() {
 
-  static unsigned long lastNetworkCheck = 0;
-  if (millis() - lastNetworkCheck >= 100) {
-    lastNetworkCheck = millis();
-    ftpSrv.handleFTP();
-    server.handleClient();
-  }
+  // Kept as a redundant safety net — computeVariance() now services
+  // FTP/web internally every ~5ms, so this 100ms gate rarely matters,
+  // but it's harmless to leave in for the moments loop() is between
+  // detectBlower() calls.
+  // FTP burst — confirmed on the bench to clear RETR transfers.
+  // Runs once per loop() pass, bounded and yield()-protected.
+  ftpBurstService();
+  server.handleClient();
 
   checkSerial();
 
@@ -503,7 +671,11 @@ void loop() {
     lastOneSecondCheck += 1000;
 
     getDateTime();
-    logToFile(blowerIsOn);
+    if (blowerIsOn) {
+      logToFile(true);   // continuous per-second logging while running
+    }
+    // while OFF: no per-second file write — the single OFF summary row
+    // was already written at the transition in detectBlower()
 
     Serial.printf("[%s] Var: %.2f  State: %s  C_On: %d  C_Off: %d  Elapsed: %.2f min  Daily: %.2f min\n",
                   dtStamp.c_str(),
