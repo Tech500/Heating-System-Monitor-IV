@@ -44,11 +44,11 @@
 #include <HTTPClient.h>
 #include <Ticker.h>
 
-const char* ssid     = "ssid";
-const char* password = "password";
+const char* ssid     = "yourssid";
+const char* password = "yourpassword";
 
 // ─── GOOGLE DEPLOYMENT ID ────────────────────────────────────────────────────
-const String googleDeploymentID = "removed for security";
+const String googleDeploymentID = "Google Sheet deployment Id";
 const String googleURL          = "https://script.google.com/macros/s/" + googleDeploymentID + "/exec";
 
 // ─────────────────────────────────────────────
@@ -177,7 +177,7 @@ class BME280Peer : public ESP_NOW_Peer {
 };
 
 // ─── Hardware MAC Map ─────────────────────────────────────────────────────────
-uint8_t senderBlowerMAC[] = { 0xE4, 0x65, 0xB8, 0x24, 0xF6, 0x4C };
+uint8_t senderBlowerMAC[] = { 0x9C, 0x13, 0x9E, 0xF2, 0x2A, 0xB4 };
 uint8_t senderBmeMAC[]    = { 0xE4, 0x65, 0xB8, 0x25, 0x42, 0xF8 };
 #define CHANNEL 0
 
@@ -477,7 +477,7 @@ void loop() {
     oneSecondElapsed = false;
 
     static bool didMidnightReset = false;
-    if (HOUR == 0 && MINUTE == 0 && SECOND == 0) {
+    if (HOUR == 23 && MINUTE == 58 && SECOND == 0) {
       if (!didMidnightReset) {
         dailyTotalMinutes = 0;
         Serial.println("Midnight reset: dailyTotalMinutes = 0");
