@@ -102,7 +102,7 @@ thermostat temperature, elapsed blower time, and daily total blower, outside pre
 ## Dependencies
 
 - Arduino ESP32 Core 3.3.10
-- Tylor Glenn BME280I2C.h Library
+- BME280  [Tylor Glenn BME280I2C.h Library](https://github.com/finitespace/BME280/tree/master)
 - MCP6050 [ElectricCats MPU6050 Libreary](https://github.com/ElectronicCats/mpu6050)
 - LittleFS (built into ESP32 Arduino Core)
 
