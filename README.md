@@ -13,7 +13,7 @@ and variance-based thresholding. No electrical hookup to the heating/cooling sys
 
 What is variance-based thresholding?
 
-Blower state is detected using a MPU6040 IMU; by computing the statistical variance of ADC samples taken from the MPU6050 module's I²C output. A running blower produces mechanical vibration, causing significant vibration (high variance). A blower that is off; produces way less vibration (low variance). The MPU6050 IMU requires no threshoold adjustment.
+Blower state is detected using a MPU6050 IMU; by computing the statistical variance of ADC samples taken from the MPU6050 module's I²C output. A running blower produces mechanical vibration, causing significant vibration (high variance). A blower that is off; produces way less vibration (low variance). The MPU6050 IMU requires no threshoold adjustment.
 
 Logged data includes: timestamp, outside temperature, inside temperature, register temperature,
 thermostat temperature, elapsed blower time, and daily total blower, outside pressure, inside pressure, and difference presssure.  NTP time stamp is written to both a local LittleFS log file and a perpetual Google Sheet (month-to-month, year-to-year).
