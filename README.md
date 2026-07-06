@@ -13,11 +13,10 @@ and variance-based thresholding. No electrical hookup to the heating/cooling sys
 
 What is variance-based thresholding?
 
-Blower state is inferred acoustically by computing the statistical variance of ADC samples taken from the KY-038 microphone module's analog output. A running blower produces broadband mechanical noise, causing significant ADC sample fluctuation (high variance). A quiet room produces near-flat ADC output (low variance). The KY-038 onboard potentiometer sets the sensitivity threshold — adjusted once at installation with the blower off.
+Blower state is detected using a MPU6040 IMU; by computing the statistical variance of ADC samples taken from the MPU6050 module's I²C output. A running blower produces mechanical vibration, causing significant vibration (high variance). A blower that is off; produces way less vibration (low variance). The MPU6050 IMU requires no threshoold adjustment.
 
 Logged data includes: timestamp, outside temperature, inside temperature, register temperature,
-thermostat temperature, elapsed blower time, and daily total blower time — written to both a
-local LittleFS log file and a perpetual Google Sheet (month-to-month, year-to-year).
+thermostat temperature, elapsed blower time, and daily total blower, outside pressure, inside pressure, and difference presssure.  NTP time stamp is written to both a local LittleFS log file and a perpetual Google Sheet (month-to-month, year-to-year).
 
 [Inspiration for the perpetual Google Sheet](https://iotdesignpro.com/articles/esp32-data-logging-to-google-sheets-with-google-scripts)
 
@@ -27,16 +26,16 @@ local LittleFS log file and a perpetual Google Sheet (month-to-month, year-to-ye
 
 ### Receiver Node (HeatingMonitor_Receiver)
 - ESP32 DevKit V1 Module
-- MCP9808 temperature sensor (I2C address 0x18) — register/inside temperature
+- BME280 sensor — inside temperature, humidity, barometric pressure
 - Connects to Wi-Fi and Google Sheets via HTTP POST
 
 ### BME280 Node (ESP_NOW_BME280)
 - ESP32 DevKit V1v Module
-- BME280 sensor — temperature, humidity, barometric pressure
+- BME280 sensor — outside temperature, humidity, barometric pressure
 
 ### Blower Node (ESP_NOW_Blower)
 - ESP32 DevKit V1 Module
-- KY-038 microphone module — acoustical blower detection
+- MPU6050 — IMU blower detection
 
 ---
 
@@ -52,36 +51,7 @@ local LittleFS log file and a perpetual Google Sheet (month-to-month, year-to-ye
 
 > **Note:** MAC addresses shown are examples from this build. Replace with the actual MAC addresses
 > of your ESP32 modules. Each ESP32 has a unique MAC — use a brief sketch calling
-> `WiFi.macAddress()` to discover yours.
-
----
-
-## KY-038 Microphone — Threshold Adjustment
-
-The KY-038 uses variance-based thresholding for blower detection. Proper pot adjustment
-is critical for reliable, clean on/off transitions.
-
-**Recommended: Adjust at the bench, away from the furnace room.** Working space around
-the furnace is typically tight and dark, making the tiny pot screw difficult to access.
-
-**Use a diddle stick (trimmer adjustment tool) if available** — it fits over the pot screw
-and gives much better control than a standard screwdriver.
-
-> **Caution:** The potentiometer is a multi-turn trimmer (10 or more turns). If it begins
-> to tighten up, **stop turning immediately** — the wiper can be damaged if forced past
-> its end stop.
-
-**Orientation: Hold the KY-038 with the pin header to the right.**
-- Counter-clockwise — reduces sensitivity
-- Clockwise — increases sensitivity
-
-**With the heating system blower OFF and the environment quiet:**
-
-1. Power the system and observe the KY-038 digital output LED (LED2, adjacent to the potentiometer).
-2. Rotate the pot until LED2 begins to flicker slowly.
-3. Continue adjusting until LED2 just extinguishes and remains off.
-4. This sets the detection threshold just above the ambient noise floor, ensuring reliable
-   blower-on detection with a clean off-state baseline.
+> `Wis critical for reliable, clean on/off transitions.
 
 ---
 
@@ -111,7 +81,7 @@ and gives much better control than a standard screwdriver.
 ## Logged Data Format
 
 ```
-["MM/DD/YYYY HH:MM:SS", outsideTemp, insideTemp, registerTemp, thermostat, elapsedMin, dailyTotalMin]
+["MM/DD/YYYY HH:MM:SS", outsideTemp, insideTemp, registerTemp, thermostat, elapsedMin, dailyTotalMin.outside presure, inside presure, differenc pressure]
 ```
 
 ---
@@ -123,8 +93,9 @@ and gives much better control than a standard screwdriver.
 | `ESP_NOW_Blower/`             | Blower detection node sketch            |
 | `ESP_NOW_BME280/`             | BME280 environmental sensor node sketch |
 | `ESP_NOW__Receiver/`          | Receiver / logger / Google Sheets node  |
+| `Schematics/`                 | Node wiring of components               |
 | `Code.gs`                     | Google Apps Script for Sheets logging   |
-| `Heat System Monitor III.mp4` | Project demonstration video             |
+| `Heat System Monitor III.mp4` | Project demonstration video, download   |
 
 ---
 
@@ -132,7 +103,7 @@ and gives much better control than a standard screwdriver.
 
 - Arduino ESP32 Core 3.3.10
 - Tylor Glenn BME280I2C.h Library
-- MCP9808 (direct Wire register reads — no library required)
+- MCP6050 [ElectricCats MPU6050 Libreary](https://github.com/ElectronicCats/mpu6050)
 - LittleFS (built into ESP32 Arduino Core)
 
 ---
