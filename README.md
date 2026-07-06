@@ -1,6 +1,6 @@
 # Heating System Monitor IV  
 
-**Collaboration with myself, Claude AI (Anthropic), and asistance from Gemini AI (Google).**
+**Collaboration with myself, Claude (Anthropic's AI), and asistance from Gemini (Google's AI).**
 
 No electrical connection to the heating system — monitors temperatures and blower run time only via acoustical detection.
 Works in both cooling and heating seasons --year round!
