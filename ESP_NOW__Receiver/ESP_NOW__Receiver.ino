@@ -336,7 +336,7 @@ void processIncomingPacket(const uint8_t *data, int len) {
         dailyTotalMinutes            = blowerPacket.dailyTotalMinutes;
         sensordata.lastEventMinutes  = blowerPacket.elapsedMinutes;
         sensordata.dailyTotalMinutes = blowerPacket.dailyTotalMinutes;
-        alertFlag = true;
+        if (!blowerPacket.on) alertFlag = true;   // log to Sheet only at OFF
       } else {
         Serial.printf("\n⚠️ Size Mismatch — BlowerData: Expected %d got %d bytes\n",
                       sizeof(BlowerData), len);
