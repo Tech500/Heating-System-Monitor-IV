@@ -1,6 +1,6 @@
 /* Heating System Monitor IV
    ESP_NOW_Receiver.ino with temperature Offset
-   July 10, 2026
+   July 6, 2026
    ESP32_-NOW,  ESP32 Core 3.3.10
    Receives MSG_BLOWER_STATE from ESP_NOW_Blower node
    Receives MSG_BME280 from ESP_NOW_BME280 node
@@ -62,11 +62,11 @@
 #include <Wire.h>
 
 
-const char* ssid = "yourssid";
-const char* password = "yourpassword";
+const char* ssid = "R2D2";
+const char* password = "Sky7388500";
 
 // ─── GOOGLE DEPLOYMENT ID ────────────────────────────────────────────────────
-const String googleDeploymentID = "Removed for security";  //Google sheet deployment Id
+const String googleDeploymentID = "AKfycbyozVer3rLxLzk7YzBhB8RGc2-JrZgXS31niOrptmJRk6xQA6SwEqh1Ed0TTi_Ti7UQaA";
 const String googleURL          = "https://script.google.com/macros/s/" + googleDeploymentID + "/exec";
 
 // ─────────────────────────────────────────────
@@ -93,7 +93,7 @@ const float BME280_OUTSIDE_TEMP_CAL_OFFSET_F = -4.36;
 // TODO: Re-calibrate against HP-770HD DMM reference once installed in place
 // Offset applied to BME280 (inside) temperature output
 // ─────────────────────────────────────────────
-const float BME280_INSIDE_TEMP_CAL_OFFSET_F = -0.21;
+const float BME280_INSIDE_TEMP_CAL_OFFSET_F = -9.01;
 
 const float LOW_TEMP_F  = 65.0;
 const float HIGH_TEMP_F = 74.0;
