@@ -1,6 +1,6 @@
 /* Heating System Monitor IV
-   ESP_NOW_Receeeiver.ino with temperature Offset
-   June 27,2026
+   ESP_NOW_Receiver.ino with temperature Offset
+   July 6, 2026
    ESP32_-NOW,  ESP32 Core 3.3.10
    Receives MSG_BLOWER_STATE from ESP_NOW_Blower node
    Receives MSG_BME280 from ESP_NOW_BME280 node
@@ -28,6 +28,21 @@
    hypsometric formula (toSeaLevelHPa) before inHg conversion.
    Pressure diff remains in absolute hPa converted to inHg -- both sensors same elevation.
    Internal math remains in hPa throughout.
+
+   --- Update July 6, 2026 ---
+   Duplicate-row fix: alertFlag now gated to OFF transition only
+   (if (!blowerPacket.on)) -- ON packets carry stale elapsed/daily values.
+
+   Outside BME280 freshness (dead-node detection):
+   globalTemp/globalHumidity/globalPressure initialized to NAN and cleared
+   back to NAN after every Google Sheets post. If the BME280 node does not
+   answer the alert poll during the current cycle, the values remain NAN and
+   the Sheet/LittleFS log record "Offline" for outsideTemp, outsidePressure,
+   and pressureDiff instead of fossilized data. Self-heals on next reply.
+   Also fixes first-cycle 0.0 outside temp (HSM III bug) -- boot value is
+   now NAN -> "Offline" until first real packet arrives.
+   Sheets post-processing note: AVERAGE/charts skip text cells; guard any
+   per-row formulas with ISNUMBER(); pandas: na_values=['Offline'].
 */
 
 #include <Arduino.h>
@@ -38,17 +53,20 @@
 #include <esp_wifi.h>
 #include <ESP32_NOW.h>
 #include <LittleFS.h>
+#include <BME280I2C.h>
 #include <FTPServer.h>
 #include <WebServer.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
-#include <Ticker.h>
+//#include <Ticker.h>
+#include <Wire.h>
 
-const char* ssid     = "yourssid";
+
+const char* ssid = "yourssid";
 const char* password = "yourpassword";
 
 // ─── GOOGLE DEPLOYMENT ID ────────────────────────────────────────────────────
-const String googleDeploymentID = "Google Sheet deployment Id";
+const String googleDeploymentID = "Removed for security";  //Google sheet deployment Id
 const String googleURL          = "https://script.google.com/macros/s/" + googleDeploymentID + "/exec";
 
 // ─────────────────────────────────────────────
@@ -57,12 +75,25 @@ const String googleURL          = "https://script.google.com/macros/s/" + google
 // ─────────────────────────────────────────────
 BME280I2C bmeInside;
 
+#define SDA 4
+#define SCL 5
+
+// ─────────────────────────────────────────────
+// BME280 (Outside) Temperature Calibration
+// Ref: HP-770HD at sensor location, 07/07/2026
+// Raw 89.35 F vs Metar KUMP 86.0 F -> offset -6.23 F
+// NOTE: offset includes steady-state self-heating of current
+// always-on DevKit node. RE-CALIBRATE after EoRa deep-sleep
+// migration -- self-heating term will largely disappear.
+// ─────────────────────────────────────────────
+const float BME280_OUTSIDE_TEMP_CAL_OFFSET_F = -4.36;
+
 // ─────────────────────────────────────────────
 // BME280 (Inside) Temperature Calibration
 // TODO: Re-calibrate against HP-770HD DMM reference once installed in place
 // Offset applied to BME280 (inside) temperature output
 // ─────────────────────────────────────────────
-const float BME280_INSIDE_TEMP_CAL_OFFSET_F = -5.35;
+const float BME280_INSIDE_TEMP_CAL_OFFSET_F = -0.21;
 
 const float LOW_TEMP_F  = 65.0;
 const float HIGH_TEMP_F = 74.0;
@@ -77,16 +108,14 @@ int DOW, MONTH, DATE, YEAR, HOUR, MINUTE, SECOND;
 String weekDay;
 char strftime_buf[64];
 String dtStamp    = "";
+
+
 String lastUpdate = "";
 time_t tnow;
 
-// ─── Ticker / One-Second ISR ─────────────────────────────────────────────────
-Ticker secondTicker;
-volatile bool oneSecondElapsed = false;
-
-void IRAM_ATTR countSecondsISR() {
-  oneSecondElapsed = true;
-}
+// Replace Ticker variables with global millis trackers
+unsigned long lastResetCheck = 0;
+const unsigned long checkInterval = 1000; // Check every 1 second
 
 // ─── Message / Packet Structures ─────────────────────────────────────────────
 enum MessageType : uint8_t {
@@ -192,10 +221,13 @@ bool googleSheetsSent  = false;
 double elapsedMinutes                    = 0.0;
 RTC_DATA_ATTR double dailyTotalMinutes   = 0.0;  // survives soft reset/crash; clears on power-on
 
-float globalTemp         = 0.0;
-float globalHumidity     = 0.0;
-float globalPressure     = 0.0;
-float thermostatSetpoint = 74.0;
+// Outside BME280 registers -- NAN = "no fresh reading this cycle".
+// Written only by MSG_BME280; cleared back to NAN after every Sheets post.
+// isnan() at post time => node did not answer this cycle's poll => "Offline".
+float globalTemp         = NAN;
+float globalHumidity     = NAN;
+float globalPressure     = NAN;
+float thermostatSetpoint = 75.0;
 
 // ─── Forward Declarations ─────────────────────────────────────────────────────
 // ─── Elevation / Sea-Level Pressure Conversion ───────────────────────────────
@@ -338,7 +370,7 @@ void processIncomingPacket(const uint8_t *data, int len) {
         sensordata.dailyTotalMinutes = blowerPacket.dailyTotalMinutes;
         if (!blowerPacket.on) alertFlag = true;   // log to Sheet only at OFF
       } else {
-        Serial.printf("\n⚠️ Size Mismatch — BlowerData: Expected %d got %d bytes\n",
+        Serial.printf("\n\n Size Mismatch — BlowerData: Expected %d got %d bytes\n",
                       sizeof(BlowerData), len);
       }
       break;
@@ -357,19 +389,22 @@ void processIncomingPacket(const uint8_t *data, int len) {
       if (len == sizeof(BME280Data)) {
         BME280Data bmePacket;
         memcpy(&bmePacket, data, sizeof(BME280Data));
-        globalTemp     = bmePacket.temperature;
+        globalTemp     = bmePacket.temperature;   // fresh reading -- clears NAN sentinel
         globalHumidity = bmePacket.humidity;
         globalPressure = bmePacket.pressure;
+
+        globalTemp     = bmePacket.temperature + BME280_OUTSIDE_TEMP_CAL_OFFSET_F;
+
         Serial.printf("\n[Radio Link] BME280 Update -> Temp: %.2f F  Hum: %.1f%%  Pres: %.4f inHg\n",
                       globalTemp, globalHumidity, globalPressure * 0.02953);
       } else {
-        Serial.printf("\n⚠️ Size Mismatch — BmeData: Expected %d got %d bytes\n",
+        Serial.printf("\n\n Size Mismatch — BmeData: Expected %d got %d bytes\n",
                       sizeof(BME280Data), len);
       }
       break;
 
     default:
-      Serial.printf("\n⚠️ Unknown packet type: %d\n", data[0]);
+      Serial.printf("\n\n Unknown packet type: %d\n", data[0]);
       break;
   }
 }
@@ -378,11 +413,7 @@ void processIncomingPacket(const uint8_t *data, int len) {
 void setup() {
   Serial.begin(9600);
   delay(1000);
-  Serial.println("\n\nHeating System Monitor III - ESP_NOW_Receiver.ino\n");
-
-  // HW-394 replacement board: D4=SDA(GPIO4), D5=SCL(GPIO5)
-  // Original board had defective 3.3V rail (2.04V), causing frozen I2C reads.
-  Wire.begin(4, 5);
+  Serial.println("\n\nHeating System Monitor IV - ESP_NOW_Receiver.ino\n");
 
   WiFi.mode(WIFI_MODE_APSTA);
   WiFi.setSleep(WIFI_PS_NONE);
@@ -395,6 +426,10 @@ void setup() {
   Serial.println("Receiver MAC: " + WiFi.macAddress());
   Serial.printf("WiFi Channel: %d\n", WiFi.channel());
 
+  // HW-394 replacement board: D4=SDA(GPIO4), D5=SCL(GPIO5)
+  // Original board had defective 3.3V rail (2.04V), causing frozen I2C reads.
+  Wire.begin(4,5);
+
   initNTP();
   initBME280Inside();
 
@@ -403,7 +438,7 @@ void setup() {
 
   ftpSrv.begin(F("admin"), F("admin"));
 
-  secondTicker.attach(1, countSecondsISR);
+  //secondTicker.attach(1, countSecondsISR);
 
   // ── ESP-NOW init — once only ──────────────────────────────────────────────
   if (!ESP_NOW.begin()) {
@@ -433,6 +468,26 @@ void setup() {
 void loop() {
   ftpSrv.handleFTP();
 
+  unsigned long currentMillis = millis();
+
+  // Non-blocking timer instead of Ticker interrupt
+  if (currentMillis - lastResetCheck >= checkInterval) {
+    lastResetCheck = currentMillis;
+  }
+
+  static bool didMidnightReset = false;
+
+  // Window-based check (no SECOND == 0 dependency)
+  if (HOUR == 23 && MINUTE == 58) {
+    if (!didMidnightReset) {
+      dailyTotalMinutes = 0;
+      Serial.println("Midnight reset: dailyTotalMinutes = 0");
+      didMidnightReset = true;
+    }
+  } else {
+    didMidnightReset = false;
+  }  
+
   // ── Gatekeeper: alertFlag handler ────────────────────────────────────────
   if (alertFlag) {
     alertFlag = false;
@@ -440,17 +495,21 @@ void loop() {
     Serial.println("[ESP-NOW] Sending alert to BME280 node...");
     bool sent = bmeNode.sendAlert(true);
     Serial.printf("[ESP-NOW] Alert send: %s\n", sent ? "OK" : "FAILED");
-    delay(1000);
+    delay(1000);   // BME280 node reply lands here and refreshes globals
 
     float insideTempF = NAN, insideHumidity = NAN, insidePressureHPa = NAN;
     readBME280Inside(insideTempF, insideHumidity, insidePressureHPa);
     sensordata.insideTemp      = insideTempF;
     sensordata.insideHumidity  = insideHumidity;
-    sensordata.outsideTemp     = globalTemp;
+    sensordata.outsideTemp     = globalTemp;        // NAN if node silent this cycle
     sensordata.thermostat      = thermostatSetpoint;
-    sensordata.outsidePressure = globalPressure;
+    sensordata.outsidePressure = globalPressure;    // NAN if node silent this cycle
     sensordata.insidePressure  = insidePressureHPa;
-    sensordata.pressureDiffHPa = globalPressure - insidePressureHPa;
+    sensordata.pressureDiffHPa = globalPressure - insidePressureHPa;  // NAN propagates
+
+    if (isnan(sensordata.outsideTemp)) {
+      Serial.println("[BME280 Outside] No reply this cycle -- posting Offline.");
+    }
 
     Serial.printf("[BME280 Inside] Temp: %.2f °F  Hum: %.2f %%  Pres: %.4f inHg\n",
                   insideTempF, insideHumidity, insidePressureHPa * 0.02953);
@@ -469,23 +528,12 @@ void loop() {
   // ── Reset after pipeline ──────────────────────────────────────────────────
   if (googleSheetsSent) {
     elapsedMinutes   = 0;
+    // Clear outside registers -- next post must be backed by a fresh
+    // MSG_BME280 reply or it goes out as "Offline".
+    globalTemp       = NAN;
+    globalHumidity   = NAN;
+    globalPressure   = NAN;
     googleSheetsSent = false;
-  }
-
-  // ── One-second — midnight reset ───────────────────────────────────────────
-  if (oneSecondElapsed) {
-    oneSecondElapsed = false;
-
-    static bool didMidnightReset = false;
-    if (HOUR == 23 && MINUTE == 58 && SECOND == 0) {
-      if (!didMidnightReset) {
-        dailyTotalMinutes = 0;
-        Serial.println("Midnight reset: dailyTotalMinutes = 0");
-        didMidnightReset = true;
-      }
-    } else {
-      didMidnightReset = false;
-    }
   }
 }
 
@@ -507,7 +555,7 @@ void sendDataToServer(String updateTime, float outT, float inT, float inHum,
                       float therm, double eventM, double dailyM,
                       float outP, float inP, float diffP) {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("⚠️ Sheet update blocked: Wi-Fi offline.");
+    Serial.println("\n\nSheet update blocked: Wi-Fi offline.");
     return;
   }
 
@@ -515,16 +563,25 @@ void sendDataToServer(String updateTime, float outT, float inT, float inHum,
   secureClient.setInsecure();
   HTTPClient http;
 
+  // Outside node freshness: NAN => no reply to this cycle's poll => "Offline".
+  // All three outside-derived columns go offline together (diff is
+  // meaningless without a fresh outside pressure). Inside columns unaffected.
+  bool bmeOffline = isnan(outT);
+
+  String outTStr  = bmeOffline ? "Offline" : String(outT, 2);
+  String outPStr  = bmeOffline ? "Offline" : String(toSeaLevelHPa(outP, outT) * 0.02953, 4);
+  String diffPStr = bmeOffline ? "Offline" : String(diffP * 0.02953, 4);
+
   String data = "?lastUpdate="        + urlEncode(updateTime)
-              + "&outsideTemp="       + String(outT, 2)
+              + "&outsideTemp="       + outTStr
               + "&insideTemp="        + String(inT, 2)
               + "&insideHumidity="    + String(inHum, 2)
               + "&thermostat="        + String(therm, 2)
               + "&elapsedMinutes="    + String(eventM, 2)
               + "&dailyTotalMinutes=" + String(dailyM, 2)
-              + "&outsidePressure="   + String(toSeaLevelHPa(outP, sensordata.outsideTemp) * 0.02953, 4)
+              + "&outsidePressure="   + outPStr
               + "&insidePressure="    + String(toSeaLevelHPa(inP,  sensordata.insideTemp)  * 0.02953, 4)
-              + "&pressureDiff="      + String(diffP * 0.02953, 4);  // diff stays absolute
+              + "&pressureDiff="      + diffPStr;  // diff stays absolute
 
   String urlFinal = googleURL + data;
   Serial.println("\n[HTTP] Target: " + urlFinal);
@@ -542,7 +599,7 @@ void sendDataToServer(String updateTime, float outT, float inT, float inHum,
     }
     http.end();
   } else {
-    Serial.println("⚠️ Secure connection failed.");
+    Serial.println("\n Secure connection failed.");
   }
 }
 
@@ -556,16 +613,26 @@ void logData() {
   }
   File appendLog = LittleFS.open("/log.txt", FILE_APPEND);
   if (!appendLog) return;
+
+  // Mirror the Sheet's Offline handling so LittleFS agrees with Google Sheets.
+  bool bmeOffline = isnan(sensordata.outsideTemp);
+
   appendLog.print(dtStamp);
-  appendLog.print(" , Outside: ");      appendLog.print(sensordata.outsideTemp, 2);
+  appendLog.print(" , Outside: ");
+  if (bmeOffline) appendLog.print("Offline");
+  else            appendLog.print(sensordata.outsideTemp, 2);
   appendLog.print(" F, Inside: ");      appendLog.print(sensordata.insideTemp, 2);
   appendLog.print(" F, In.Humidity: "); appendLog.print(sensordata.insideHumidity, 2);
   appendLog.print(" %, Thermostat: ");  appendLog.print(thermostatSetpoint, 2);
   appendLog.print(" F, Event: ");       appendLog.print(sensordata.lastEventMinutes, 2);
   appendLog.print(", Total 24HR: ");    appendLog.print(sensordata.dailyTotalMinutes, 2);
-  appendLog.print(", OutP: ");          appendLog.print(toSeaLevelHPa(sensordata.outsidePressure, sensordata.outsideTemp) * 0.02953, 4);
+  appendLog.print(", OutP: ");
+  if (bmeOffline) appendLog.print("Offline");
+  else            appendLog.print(toSeaLevelHPa(sensordata.outsidePressure, sensordata.outsideTemp) * 0.02953, 4);
   appendLog.print(" inHg, InP: ");      appendLog.print(toSeaLevelHPa(sensordata.insidePressure,  sensordata.insideTemp)  * 0.02953, 4);
-  appendLog.print(" inHg, Diff: ");     appendLog.print(sensordata.pressureDiffHPa * 0.02953, 4);
+  appendLog.print(" inHg, Diff: ");
+  if (bmeOffline) appendLog.print("Offline");
+  else            appendLog.print(sensordata.pressureDiffHPa * 0.02953, 4);
   appendLog.print(" inHg\n");
   appendLog.close();
 }
