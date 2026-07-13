@@ -81,12 +81,12 @@ BME280I2C bmeInside;
 // ─────────────────────────────────────────────
 // BME280 (Outside) Temperature Calibration
 // Ref: HP-770HD at sensor location, 07/07/2026
-// Raw 89.35 F vs Metar KUMP 86.0 F -> offset -6.23 F
+// Raw 74.52 F vs AVG of 3 Nearby CWOP Reports -67.66 -> offset -6.86 F
 // NOTE: offset includes steady-state self-heating of current
 // always-on DevKit node. RE-CALIBRATE after EoRa deep-sleep
 // migration -- self-heating term will largely disappear.
 // ─────────────────────────────────────────────
-const float BME280_OUTSIDE_TEMP_CAL_OFFSET_F = -4.36;
+const float BME280_OUTSIDE_TEMP_CAL_OFFSET_F = -6.86;
 
 // ─────────────────────────────────────────────
 // BME280 (Inside) Temperature Calibration
