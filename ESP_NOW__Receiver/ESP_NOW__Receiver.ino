@@ -1,6 +1,6 @@
 /* Heating System Monitor IV
    ESP_NOW_Receiver.ino with temperature Offset
-   July 6, 2026
+   July 13, 2026
    ESP32_-NOW,  ESP32 Core 3.3.10
    Receives MSG_BLOWER_STATE from ESP_NOW_Blower node
    Receives MSG_BME280 from ESP_NOW_BME280 node
@@ -60,10 +60,13 @@
 #include <HTTPClient.h>
 //#include <Ticker.h>
 #include <Wire.h>
-
+#include "rom/rtc.h"
 
 const char* ssid = "R2D2";
 const char* password = "Sky7388500";
+
+//Flag to prevent reset
+bool powerOnReset = false;
 
 // ─── GOOGLE DEPLOYMENT ID ────────────────────────────────────────────────────
 const String googleDeploymentID = "AKfycbyozVer3rLxLzk7YzBhB8RGc2-JrZgXS31niOrptmJRk6xQA6SwEqh1Ed0TTi_Ti7UQaA";
@@ -78,22 +81,31 @@ BME280I2C bmeInside;
 #define SDA 4
 #define SCL 5
 
+
+//Changed methodolgy of caluculating offset.  Set
+//const float BME280_OUTSIDE_TEMP_CAL_OFFSET_F = 0;
+//Note outside temperature.  Find nearby references
+//used CWOP Stations, then averated reports --closet 
+//to time of outside temperature reported n sketch.
+//Find offset.
+
+
 // ─────────────────────────────────────────────
 // BME280 (Outside) Temperature Calibration
 // Ref: HP-770HD at sensor location, 07/07/2026
-// Raw 74.52 F vs AVG of 3 Nearby CWOP Reports -67.66 -> offset -6.86 F
+// Raw 88.92 F vs ref 83.77 F -> offset -5.15 F
 // NOTE: offset includes steady-state self-heating of current
 // always-on DevKit node. RE-CALIBRATE after EoRa deep-sleep
 // migration -- self-heating term will largely disappear.
 // ─────────────────────────────────────────────
-const float BME280_OUTSIDE_TEMP_CAL_OFFSET_F = -6.86;
+const float BME280_OUTSIDE_TEMP_CAL_OFFSET_F = -5.15;
 
 // ─────────────────────────────────────────────
 // BME280 (Inside) Temperature Calibration
 // TODO: Re-calibrate against HP-770HD DMM reference once installed in place
 // Offset applied to BME280 (inside) temperature output
 // ─────────────────────────────────────────────
-const float BME280_INSIDE_TEMP_CAL_OFFSET_F = -9.01;
+const float BME280_INSIDE_TEMP_CAL_OFFSET_F = -9.48;
 
 const float LOW_TEMP_F  = 65.0;
 const float HIGH_TEMP_F = 74.0;
@@ -254,6 +266,7 @@ void resetDailyStats();
 void temperatureInterrupt();
 void initNTP();
 String getDateTime();
+void logDailyTotal(String stamp, double dailyM, double eventM);
 void initBME280Inside();
 void readBME280Inside(float &tempF, float &humidity, float &pressureHPa);
 String urlEncode(String str);
@@ -360,15 +373,19 @@ void processIncomingPacket(const uint8_t *data, int len) {
         BlowerData blowerPacket;
         memcpy(&blowerPacket, data, sizeof(BlowerData));
         blowerIsOn = blowerPacket.on;
-        Serial.printf("\n[Radio Link] Blower Update Caught -> State: %s  Elapsed: %.2f min  Daily: %.2f min\n",
+        Serial.printf("\n[Radio Link] Blower Update Caught -> State: %s  Elapsed: %.2f min  Daily(blower-side): %.2f min\n",
                       blowerIsOn ? "ON" : "OFF",
                       blowerPacket.elapsedMinutes,
                       blowerPacket.dailyTotalMinutes);
-        elapsedMinutes               = blowerPacket.elapsedMinutes;
-        dailyTotalMinutes            = blowerPacket.dailyTotalMinutes;
-        sensordata.lastEventMinutes  = blowerPacket.elapsedMinutes;
-        sensordata.dailyTotalMinutes = blowerPacket.dailyTotalMinutes;
-        if (!blowerPacket.on) alertFlag = true;   // log to Sheet only at OFF
+
+        elapsedMinutes = blowerPacket.elapsedMinutes;
+        sensordata.lastEventMinutes = blowerPacket.elapsedMinutes;
+
+        if (!blowerPacket.on) {
+          dailyTotalMinutes += blowerPacket.elapsedMinutes;   // receiver accumulates, own authority
+          sensordata.dailyTotalMinutes = dailyTotalMinutes;
+          alertFlag = true;   // log to Sheet only at OFF
+        }
       } else {
         Serial.printf("\n\n Size Mismatch — BlowerData: Expected %d got %d bytes\n",
                       sizeof(BlowerData), len);
@@ -473,6 +490,7 @@ void loop() {
   // Non-blocking timer instead of Ticker interrupt
   if (currentMillis - lastResetCheck >= checkInterval) {
     lastResetCheck = currentMillis;
+    getDateTime();
   }
 
   static bool didMidnightReset = false;
@@ -480,13 +498,23 @@ void loop() {
   // Window-based check (no SECOND == 0 dependency)
   if (HOUR == 23 && MINUTE == 58) {
     if (!didMidnightReset) {
+     
+      // Snapshot yesterday's final totals before the reset zeroes them
+      double yesterdayDailyTotalMinutes = dailyTotalMinutes;
+      double yesterdayElapsedMinutes    = elapsedMinutes;
+
+      Serial.printf("Midnight snapshot -> Elapsed: %.2f min  Daily: %.2f min\n",
+                    yesterdayElapsedMinutes, yesterdayDailyTotalMinutes);
+
+      logDailyTotal(dtStamp, yesterdayDailyTotalMinutes, yesterdayElapsedMinutes);
+
       dailyTotalMinutes = 0;
       Serial.println("Midnight reset: dailyTotalMinutes = 0");
       didMidnightReset = true;
     }
   } else {
     didMidnightReset = false;
-  }  
+  }
 
   // ── Gatekeeper: alertFlag handler ────────────────────────────────────────
   if (alertFlag) {
@@ -634,6 +662,24 @@ void logData() {
   if (bmeOffline) appendLog.print("Offline");
   else            appendLog.print(sensordata.pressureDiffHPa * 0.02953, 4);
   appendLog.print(" inHg\n");
+  appendLog.close();
+}
+
+// ─── Local File Logging ───────────────────────────────────────────────────────
+void logDailyTotal(String stamp, double dailyM, double eventM) {
+  if (!LittleFS.exists("/daily_totals.csv")) {
+    File setupFile = LittleFS.open("/daily_totals.csv", FILE_WRITE);
+    if (!setupFile) return;
+    setupFile.println("Timestamp,DailyTotalMinutes,LastEventMinutes");
+    setupFile.close();
+  }
+  File appendLog = LittleFS.open("/daily_totals.csv", FILE_APPEND);
+  if (!appendLog) return;
+  appendLog.print(stamp);
+  appendLog.print(",");
+  appendLog.print(dailyM, 2);
+  appendLog.print(",");
+  appendLog.println(eventM, 2);
   appendLog.close();
 }
 
