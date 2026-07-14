@@ -43,6 +43,9 @@
    now NAN -> "Offline" until first real packet arrives.
    Sheets post-processing note: AVERAGE/charts skip text cells; guard any
    per-row formulas with ISNUMBER(); pandas: na_values=['Offline'].
+
+   --- Update July 14, 2026 ---
+   Added reset Reason Logging
 */
 
 #include <Arduino.h>
@@ -58,9 +61,8 @@
 #include <WebServer.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
-//#include <Ticker.h>
-#include <Wire.h>
 #include "rom/rtc.h"
+#include "esp_system.h"   // esp_reset_reason() -- for reset_log.txt
 
 const char* ssid = "SSID";
 const char* password = "PASSWORD";
@@ -98,7 +100,7 @@ BME280I2C bmeInside;
 // always-on DevKit node. RE-CALIBRATE after EoRa deep-sleep
 // migration -- self-heating term will largely disappear.
 // ─────────────────────────────────────────────
-const float BME280_OUTSIDE_TEMP_CAL_OFFSET_F = -5.15;
+const float BME280_OUTSIDE_TEMP_CAL_OFFSET_F = +6.24;
 
 // ─────────────────────────────────────────────
 // BME280 (Inside) Temperature Calibration
@@ -267,6 +269,7 @@ void temperatureInterrupt();
 void initNTP();
 String getDateTime();
 void logDailyTotal(String stamp, double dailyM, double eventM);
+void logResetReason();
 void initBME280Inside();
 void readBME280Inside(float &tempF, float &humidity, float &pressureHPa);
 String urlEncode(String str);
@@ -431,6 +434,7 @@ void setup() {
   Serial.begin(9600);
   delay(1000);
   Serial.println("\n\nHeating System Monitor IV - ESP_NOW_Receiver.ino\n");
+  Serial.println("Build: " __DATE__ " " __TIME__ "\n");
 
   WiFi.mode(WIFI_MODE_APSTA);
   WiFi.setSleep(WIFI_PS_NONE);
@@ -445,13 +449,18 @@ void setup() {
 
   // HW-394 replacement board: D4=SDA(GPIO4), D5=SCL(GPIO5)
   // Original board had defective 3.3V rail (2.04V), causing frozen I2C reads.
-  Wire.begin(4,5);
+  Wire.begin(SDA,SCL);
 
   initNTP();
   initBME280Inside();
 
   bool fsok = LittleFS.begin(true);
   Serial.printf("FS init: %s\n", fsok ? "ok" : "fail!");
+
+  if (fsok) {
+    getDateTime();      // dtStamp must be valid before logging the reset reason
+    logResetReason();
+  }
 
   ftpSrv.begin(F("admin"), F("admin"));
 
@@ -681,6 +690,51 @@ void logDailyTotal(String stamp, double dailyM, double eventM) {
   appendLog.print(",");
   appendLog.println(eventM, 2);
   appendLog.close();
+}
+
+// ─── Reset Reason Logging ───────────────────────────────────────────────────
+// Distinguishes expected power-cycles (e.g. laptop -> wall wart swap after
+// an offset update, which clears RTC_DATA_ATTR dailyTotalMinutes by design)
+// from unexpected faults (brownout, watchdog, panic) that would otherwise
+// look identical in the daily_totals.csv record -- a reset there, either way.
+const char* getResetReasonStr(esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_POWERON:   return "Power-on";        // normal power-cycle
+    case ESP_RST_EXT:       return "External pin";
+    case ESP_RST_SW:        return "Software reset";
+    case ESP_RST_PANIC:     return "Exception/panic";
+    case ESP_RST_INT_WDT:   return "Interrupt watchdog";
+    case ESP_RST_TASK_WDT:  return "Task watchdog";
+    case ESP_RST_WDT:       return "Other watchdog";
+    case ESP_RST_DEEPSLEEP: return "Deep sleep wake";
+    case ESP_RST_BROWNOUT:  return "Brownout";         // supply fault -- watch for this one
+    case ESP_RST_SDIO:      return "SDIO";
+    default:                return "Unknown";
+  }
+}
+
+void logResetReason() {
+  esp_reset_reason_t reason = esp_reset_reason();
+  const char* reasonStr = getResetReasonStr(reason);
+
+  if (!LittleFS.exists("/reset_log.txt")) {
+    File setupFile = LittleFS.open("/reset_log.txt", FILE_WRITE);
+    if (!setupFile) return;
+    setupFile.println("Timestamp,ResetReason");
+    setupFile.close();
+  }
+
+  File appendLog = LittleFS.open("/reset_log.txt", FILE_APPEND);
+  if (!appendLog) {
+    Serial.println("logResetReason: failed to open /reset_log.txt for append");
+    return;
+  }
+  appendLog.print(dtStamp);
+  appendLog.print(",");
+  appendLog.println(reasonStr);
+  appendLog.close();
+
+  Serial.printf("Reset reason logged: %s , %s\n", dtStamp.c_str(), reasonStr);
 }
 
 // ─── Stubs ────────────────────────────────────────────────────────────────────
