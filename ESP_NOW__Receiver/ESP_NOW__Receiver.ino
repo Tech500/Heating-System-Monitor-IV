@@ -62,14 +62,14 @@
 #include <Wire.h>
 #include "rom/rtc.h"
 
-const char* ssid = "R2D2";
-const char* password = "Sky7388500";
+const char* ssid = "SSID";
+const char* password = "PASSWORD";
 
 //Flag to prevent reset
 bool powerOnReset = false;
 
 // ─── GOOGLE DEPLOYMENT ID ────────────────────────────────────────────────────
-const String googleDeploymentID = "AKfycbyozVer3rLxLzk7YzBhB8RGc2-JrZgXS31niOrptmJRk6xQA6SwEqh1Ed0TTi_Ti7UQaA";
+const String googleDeploymentID = "Removed for security";
 const String googleURL          = "https://script.google.com/macros/s/" + googleDeploymentID + "/exec";
 
 // ─────────────────────────────────────────────
