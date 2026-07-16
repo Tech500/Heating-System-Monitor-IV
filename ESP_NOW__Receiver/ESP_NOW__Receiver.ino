@@ -46,7 +46,8 @@
 
    --- Update July 16, 2026 --
    Added Preferences (NVS Storage) for elapsedTime and dailyTotalMinutes; to avoid 
-   LittleFS short comings.
+   LittleFS short comings. Added LittleFS write, status LED to aid in removing power
+   to prevent LittleFS data corruption removing power during a data write.
 */
 
 #include <Arduino.h>
