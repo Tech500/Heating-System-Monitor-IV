@@ -44,8 +44,9 @@
    Sheets post-processing note: AVERAGE/charts skip text cells; guard any
    per-row formulas with ISNUMBER(); pandas: na_values=['Offline'].
 
-   --- Update July 14, 2026 ---
-   Added reset Reason Logging
+   --- Update July 16, 2026 --
+   Added Preferences (NVS Storage) for elapsedTime and dailyTotalMinutes; to avoid 
+   LittleFS short comings.
 */
 
 #include <Arduino.h>
@@ -55,6 +56,7 @@
 #include <WiFiUdp.h>
 #include <esp_wifi.h>
 #include <ESP32_NOW.h>
+#include "FS.h"
 #include <LittleFS.h>
 #include <BME280I2C.h>
 #include <FTPServer.h>
@@ -63,9 +65,12 @@
 #include <HTTPClient.h>
 #include "rom/rtc.h"
 #include "esp_system.h"   // esp_reset_reason() -- for reset_log.txt
+#include <Preferences.h>
+
+#define WRITE_LED_PIN 23  //LittleFS Status LED  ON = Writing
 
 const char* ssid = "SSID";
-const char* password = "PASSWORD";
+const char* password = "YOURPASSWORD";
 
 //Flag to prevent reset
 bool powerOnReset = false;
@@ -100,14 +105,14 @@ BME280I2C bmeInside;
 // always-on DevKit node. RE-CALIBRATE after EoRa deep-sleep
 // migration -- self-heating term will largely disappear.
 // ─────────────────────────────────────────────
-const float BME280_OUTSIDE_TEMP_CAL_OFFSET_F = +6.24;
+const float BME280_OUTSIDE_TEMP_CAL_OFFSET_F = -.43;
 
 // ─────────────────────────────────────────────
 // BME280 (Inside) Temperature Calibration
 // TODO: Re-calibrate against HP-770HD DMM reference once installed in place
 // Offset applied to BME280 (inside) temperature output
 // ─────────────────────────────────────────────
-const float BME280_INSIDE_TEMP_CAL_OFFSET_F = -9.48;
+const float BME280_INSIDE_TEMP_CAL_OFFSET_F = -7.11;
 
 const float LOW_TEMP_F  = 65.0;
 const float HIGH_TEMP_F = 74.0;
@@ -128,7 +133,7 @@ String lastUpdate = "";
 time_t tnow;
 
 // Replace Ticker variables with global millis trackers
-unsigned long lastResetCheck = 0;
+unsigned long lastResetCheck = -0.43;
 const unsigned long checkInterval = 1000; // Check every 1 second
 
 // ─── Message / Packet Structures ─────────────────────────────────────────────
@@ -233,7 +238,10 @@ bool alertFlag         = false;
 bool googleSheetsSent  = false;
 
 double elapsedMinutes                    = 0.0;
-RTC_DATA_ATTR double dailyTotalMinutes   = 0.0;  // survives soft reset/crash; clears on power-on
+double dailyTotalMinutes   = 0.0;  // survives soft reset/crash; clears on power-on
+
+Preferences statePrefs;
+const char* STATE_NAMESPACE = "hsm4state";
 
 // Outside BME280 registers -- NAN = "no fresh reading this cycle".
 // Written only by MSG_BME280; cleared back to NAN after every Sheets post.
@@ -260,6 +268,8 @@ void sendGoogleSheetsData();
 void sendDataToServer(String updateTime, float outT, float inT, float inHum,
                       float therm, double eventM, double dailyM,
                       float outP, float inP, float diffP);
+void saveState();
+bool restoreState();
 void updateHeatingData();
 void displayData();
 void logData();
@@ -388,6 +398,7 @@ void processIncomingPacket(const uint8_t *data, int len) {
           dailyTotalMinutes += blowerPacket.elapsedMinutes;   // receiver accumulates, own authority
           sensordata.dailyTotalMinutes = dailyTotalMinutes;
           alertFlag = true;   // log to Sheet only at OFF
+          saveState();   // <-- persist to LittleFS on every OFF-event accumulation
         }
       } else {
         Serial.printf("\n\n Size Mismatch — BlowerData: Expected %d got %d bytes\n",
@@ -433,8 +444,11 @@ void processIncomingPacket(const uint8_t *data, int len) {
 void setup() {
   Serial.begin(9600);
   delay(1000);
-  Serial.println("\n\nHeating System Monitor IV - ESP_NOW_Receiver.ino\n");
+  Serial.println("\n\nHeating System Monitor IV - ESP_NOW_Receiver_Preferences.ino\n");
   Serial.println("Build: " __DATE__ " " __TIME__ "\n");
+
+  pinMode(WRITE_LED_PIN, OUTPUT);
+  digitalWrite(WRITE_LED_PIN, LOW);
 
   WiFi.mode(WIFI_MODE_APSTA);
   WiFi.setSleep(WIFI_PS_NONE);
@@ -457,14 +471,27 @@ void setup() {
   bool fsok = LittleFS.begin(true);
   Serial.printf("FS init: %s\n", fsok ? "ok" : "fail!");
 
+  /*
+  Serial.println("Forcing full LittleFS format...");
+  bool formatOk = LittleFS.format();
+  Serial.printf("Format result: %s\n", formatOk ? "success" : "FAILED");
+  */
+
   if (fsok) {
-    getDateTime();      // dtStamp must be valid before logging the reset reason
+    getDateTime();
     logResetReason();
+
+    esp_reset_reason_t reason = esp_reset_reason();
+    if (reason == ESP_RST_POWERON || reason == ESP_RST_BROWNOUT) {
+      if (restoreState()) {
+        Serial.printf("Restored dailyTotalMinutes: %.2f\n", dailyTotalMinutes);
+      } else {
+        Serial.println("No valid state file — starting dailyTotalMinutes at 0.");
+      }
+    }
   }
 
   ftpSrv.begin(F("admin"), F("admin"));
-
-  //secondTicker.attach(1, countSecondsISR);
 
   // ── ESP-NOW init — once only ──────────────────────────────────────────────
   if (!ESP_NOW.begin()) {
@@ -507,6 +534,7 @@ void loop() {
   // Window-based check (no SECOND == 0 dependency)
   if (HOUR == 23 && MINUTE == 58) {
     if (!didMidnightReset) {
+      digitalWrite(WRITE_LED_PIN, HIGH);
      
       // Snapshot yesterday's final totals before the reset zeroes them
       double yesterdayDailyTotalMinutes = dailyTotalMinutes;
@@ -520,6 +548,8 @@ void loop() {
       dailyTotalMinutes = 0;
       Serial.println("Midnight reset: dailyTotalMinutes = 0");
       didMidnightReset = true;
+
+      digitalWrite(WRITE_LED_PIN, LOW);
     }
   } else {
     didMidnightReset = false;
@@ -528,6 +558,7 @@ void loop() {
   // ── Gatekeeper: alertFlag handler ────────────────────────────────────────
   if (alertFlag) {
     alertFlag = false;
+    digitalWrite(WRITE_LED_PIN, HIGH);   // writes starting
 
     Serial.println("[ESP-NOW] Sending alert to BME280 node...");
     bool sent = bmeNode.sendAlert(true);
@@ -560,6 +591,8 @@ void loop() {
     logData();
     sendGoogleSheetsData();
     googleSheetsSent = true;
+
+    digitalWrite(WRITE_LED_PIN, LOW);    // writes done, safe to pull power
   }
 
   // ── Reset after pipeline ──────────────────────────────────────────────────
@@ -690,6 +723,30 @@ void logDailyTotal(String stamp, double dailyM, double eventM) {
   appendLog.print(",");
   appendLog.println(eventM, 2);
   appendLog.close();
+}
+
+// ─── State Persistence (poweron/brownout recovery) — NVS-based ─────────────
+// Moved off LittleFS after a July 15, 2026 corruption event (Corrupted dir
+// pair at {0x0,0x1}, mount fail -84) triggered by abrupt power-pull during
+// a cal session. NVS (Preferences) uses a log-structured write scheme
+// specifically tolerant of interrupted writes -- same rationale as the
+// blower node's existing dailyTotalMinutes persistence.
+void saveState() {
+  statePrefs.begin(STATE_NAMESPACE, false);   // read/write
+  statePrefs.putDouble("elapsed", elapsedMinutes);
+  statePrefs.putDouble("dailyTot", dailyTotalMinutes);
+  statePrefs.end();
+}
+
+bool restoreState() {
+  statePrefs.begin(STATE_NAMESPACE, true);    // read-only
+  bool exists = statePrefs.isKey("dailyTot");
+  if (exists) {
+    elapsedMinutes    = statePrefs.getDouble("elapsed",  0.0);
+    dailyTotalMinutes = statePrefs.getDouble("dailyTot", 0.0);
+  }
+  statePrefs.end();
+  return exists;
 }
 
 // ─── Reset Reason Logging ───────────────────────────────────────────────────
