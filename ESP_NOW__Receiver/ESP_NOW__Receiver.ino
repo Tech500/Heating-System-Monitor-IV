@@ -1,6 +1,6 @@
 /* Heating System Monitor IV
    ESP_NOW_Receiver.ino with temperature Offset
-   July 13, 2026
+   July 19, 2026
    ESP32_-NOW,  ESP32 Core 3.3.10
    Receives MSG_BLOWER_STATE from ESP_NOW_Blower node
    Receives MSG_BME280 from ESP_NOW_BME280 node
@@ -44,10 +44,30 @@
    Sheets post-processing note: AVERAGE/charts skip text cells; guard any
    per-row formulas with ISNUMBER(); pandas: na_values=['Offline'].
 
-   --- Update July 16, 2026 --
-   Added Preferences (NVS Storage) for elapsedTime and dailyTotalMinutes; to avoid 
-   LittleFS short comings. Added LittleFS write, status LED to aid in removing power
-   to prevent LittleFS data corruption removing power during a data write.
+   --- Update July 19, 2026 ---
+   Cycle tracking merged in (was developed July 8 against the pre-NVS
+   receiver and skipped during the Preferences work).
+   Goal: find thermostat setpoint giving long ON cycles + long coast
+   (hold) time -- data for the setpoint optimization study.
+   - cyclesToday: OFF->ON transitions since midnight.
+   - lastCoastMinutes: gap between previous OFF and this ON -- the
+     "temperature held" time, measured via epoch time at the receiver.
+   - avgCycleMinutes: dailyTotalMinutes / cyclesToday.
+   Transitions detected against prevBlowerIsOn so a re-sent duplicate
+   state packet cannot double-count a cycle. ON length itself already
+   arrives from the blower node as elapsedMinutes at the OFF transition.
+   cyclesToday and lastOffEpoch persist in NVS alongside dailyTotalMinutes
+   (saveState/restoreState) -- survives power-on resets, matching the
+   receiver's NVS-authority design. Midnight reset zeroes cycle stats and
+   calls saveState() so a post-midnight power-cycle cannot restore
+   yesterday's totals from stale NVS.
+   New Sheets params: cyclesToday, coastMinutes, avgCycleMinutes.
+   New LittleFS columns: CyclesToday, CoastMin, AvgCycleMin.
+   Analysis: coast / (coast + elapsed) per row = duty cycle; compare
+   across setpoint test blocks normalized by inside-outside delta-T.
+   Also fixed: lastResetCheck initializer was -0.43 (paste artifact from
+   the outside cal offset) -- now 0. Removed dead pre-offset globalTemp
+   assignment in MSG_BME280 handler.
 */
 
 #include <Arduino.h>
@@ -71,7 +91,7 @@
 #define WRITE_LED_PIN 23  //LittleFS Status LED  ON = Writing
 
 const char* ssid = "SSID";
-const char* password = "YOURPASSWORD";
+const char* password = "PASSWORD";
 
 //Flag to prevent reset
 bool powerOnReset = false;
@@ -100,8 +120,6 @@ BME280I2C bmeInside;
 
 // ─────────────────────────────────────────────
 // BME280 (Outside) Temperature Calibration
-// Ref: HP-770HD at sensor location, 07/07/2026
-// Raw 88.92 F vs ref 83.77 F -> offset -5.15 F
 // NOTE: offset includes steady-state self-heating of current
 // always-on DevKit node. RE-CALIBRATE after EoRa deep-sleep
 // migration -- self-heating term will largely disappear.
@@ -110,15 +128,17 @@ const float BME280_OUTSIDE_TEMP_CAL_OFFSET_F = -.43;
 
 // ─────────────────────────────────────────────
 // BME280 (Inside) Temperature Calibration
-// TODO: Re-calibrate against HP-770HD DMM reference once installed in place
 // Offset applied to BME280 (inside) temperature output
 // ─────────────────────────────────────────────
 const float BME280_INSIDE_TEMP_CAL_OFFSET_F = -7.11;
 
+/*
+//Thinking these were for Register sensor alert --not being used
 const float LOW_TEMP_F  = 65.0;
 const float HIGH_TEMP_F = 74.0;
 const float LOW_TEMP_C  = (LOW_TEMP_F  - 32.0) / 1.8;
 const float HIGH_TEMP_C = (HIGH_TEMP_F - 32.0) / 1.8;
+*/
 
 // ─── NTP / Time ──────────────────────────────────────────────────────────────
 const char* udpAddress1 = "pool.ntp.org";
@@ -134,7 +154,7 @@ String lastUpdate = "";
 time_t tnow;
 
 // Replace Ticker variables with global millis trackers
-unsigned long lastResetCheck = -0.43;
+unsigned long lastResetCheck = 0;   // was -0.43: paste artifact, see July 19 note
 const unsigned long checkInterval = 1000; // Check every 1 second
 
 // ─── Message / Packet Structures ─────────────────────────────────────────────
@@ -239,10 +259,21 @@ bool alertFlag         = false;
 bool googleSheetsSent  = false;
 
 double elapsedMinutes                    = 0.0;
-double dailyTotalMinutes   = 0.0;  // survives soft reset/crash; clears on power-on
+double dailyTotalMinutes   = 0.0;  // NVS-persisted; restored on power-on/brownout
 
 Preferences statePrefs;
 const char* STATE_NAMESPACE = "hsm4state";
+
+// ─── Cycle Tracking (thermostat optimization study) ──────────────────────────
+// Goal: find setpoint giving long ON cycles + long coast (hold) time.
+// ON length comes from blower node's elapsedMinutes at OFF transition.
+// Coast time = gap between last OFF and next ON, measured here via epoch time.
+// cyclesToday and lastOffEpoch persist in NVS via saveState()/restoreState().
+bool   prevBlowerIsOn   = false;   // for genuine-transition detection
+int    cyclesToday      = 0;       // OFF->ON transitions since midnight
+time_t lastOffEpoch     = 0;       // when blower last shut off
+double lastCoastMinutes = 0.0;     // hold time preceding current cycle
+double avgCycleMinutes  = 0.0;     // dailyTotalMinutes / cyclesToday
 
 // Outside BME280 registers -- NAN = "no fresh reading this cycle".
 // Written only by MSG_BME280; cleared back to NAN after every Sheets post.
@@ -395,12 +426,37 @@ void processIncomingPacket(const uint8_t *data, int len) {
         elapsedMinutes = blowerPacket.elapsedMinutes;
         sensordata.lastEventMinutes = blowerPacket.elapsedMinutes;
 
+        // ── Cycle tracking: act only on genuine state transitions ─────────
+        if (blowerPacket.on && !prevBlowerIsOn) {
+          // OFF -> ON : a new cycle begins; measure the coast (hold) time
+          cyclesToday++;
+          if (lastOffEpoch > 0) {
+            lastCoastMinutes = (double)(time(nullptr) - lastOffEpoch) / 60.0;
+          } else {
+            lastCoastMinutes = 0.0;   // first cycle after boot — no prior OFF
+          }
+          Serial.printf("[Cycle] #%d started. Coast (hold) before this cycle: %.1f min\n",
+                        cyclesToday, lastCoastMinutes);
+        }
+
+        if (!blowerPacket.on && prevBlowerIsOn) {
+          // ON -> OFF : cycle complete; stamp OFF time for coast measurement
+          lastOffEpoch = time(nullptr);
+        }
+
         if (!blowerPacket.on) {
           dailyTotalMinutes += blowerPacket.elapsedMinutes;   // receiver accumulates, own authority
           sensordata.dailyTotalMinutes = dailyTotalMinutes;
+          if (cyclesToday > 0) {
+            avgCycleMinutes = dailyTotalMinutes / (double)cyclesToday;
+          }
+          Serial.printf("[Cycle] #%d complete. ON: %.2f min  Avg cycle today: %.2f min\n",
+                        cyclesToday, blowerPacket.elapsedMinutes, avgCycleMinutes);
           alertFlag = true;   // log to Sheet only at OFF
-          saveState();   // <-- persist to LittleFS on every OFF-event accumulation
+          saveState();   // <-- persist to NVS on every OFF-event accumulation
         }
+
+        prevBlowerIsOn = blowerPacket.on;
       } else {
         Serial.printf("\n\n Size Mismatch — BlowerData: Expected %d got %d bytes\n",
                       sizeof(BlowerData), len);
@@ -421,10 +477,8 @@ void processIncomingPacket(const uint8_t *data, int len) {
       if (len == sizeof(BME280Data)) {
         BME280Data bmePacket;
         memcpy(&bmePacket, data, sizeof(BME280Data));
-        globalTemp     = bmePacket.temperature;   // fresh reading -- clears NAN sentinel
-        globalHumidity = bmePacket.humidity;
+        globalHumidity = bmePacket.humidity;      // fresh reading -- clears NAN sentinel
         globalPressure = bmePacket.pressure;
-
         globalTemp     = bmePacket.temperature + BME280_OUTSIDE_TEMP_CAL_OFFSET_F;
 
         Serial.printf("\n[Radio Link] BME280 Update -> Temp: %.2f F  Hum: %.1f%%  Pres: %.4f inHg\n",
@@ -485,9 +539,10 @@ void setup() {
     esp_reset_reason_t reason = esp_reset_reason();
     if (reason == ESP_RST_POWERON || reason == ESP_RST_BROWNOUT) {
       if (restoreState()) {
-        Serial.printf("Restored dailyTotalMinutes: %.2f\n", dailyTotalMinutes);
+        Serial.printf("Restored dailyTotalMinutes: %.2f  cyclesToday: %d\n",
+                      dailyTotalMinutes, cyclesToday);
       } else {
-        Serial.println("No valid state file — starting dailyTotalMinutes at 0.");
+        Serial.println("No valid saved state — starting dailyTotalMinutes at 0.");
       }
     }
   }
@@ -536,18 +591,24 @@ void loop() {
   if (HOUR == 23 && MINUTE == 58) {
     if (!didMidnightReset) {
       digitalWrite(WRITE_LED_PIN, HIGH);
-     
+
       // Snapshot yesterday's final totals before the reset zeroes them
       double yesterdayDailyTotalMinutes = dailyTotalMinutes;
       double yesterdayElapsedMinutes    = elapsedMinutes;
 
-      Serial.printf("Midnight snapshot -> Elapsed: %.2f min  Daily: %.2f min\n",
-                    yesterdayElapsedMinutes, yesterdayDailyTotalMinutes);
+      Serial.printf("Midnight snapshot -> Elapsed: %.2f min  Daily: %.2f min  Cycles: %d  AvgCycle: %.2f min\n",
+                    yesterdayElapsedMinutes, yesterdayDailyTotalMinutes,
+                    cyclesToday, avgCycleMinutes);
 
       logDailyTotal(dtStamp, yesterdayDailyTotalMinutes, yesterdayElapsedMinutes);
 
       dailyTotalMinutes = 0;
-      Serial.println("Midnight reset: dailyTotalMinutes = 0");
+      cyclesToday       = 0;
+      avgCycleMinutes   = 0.0;
+      // lastOffEpoch intentionally NOT reset — first coast of the new day
+      // spans midnight and is still a valid hold-time measurement.
+      saveState();   // sync NVS so a post-midnight power-cycle can't restore stale totals
+      Serial.println("Midnight reset: dailyTotalMinutes = 0, cyclesToday = 0 (NVS synced)");
       didMidnightReset = true;
 
       digitalWrite(WRITE_LED_PIN, LOW);
@@ -652,7 +713,10 @@ void sendDataToServer(String updateTime, float outT, float inT, float inHum,
               + "&dailyTotalMinutes=" + String(dailyM, 2)
               + "&outsidePressure="   + outPStr
               + "&insidePressure="    + String(toSeaLevelHPa(inP,  sensordata.insideTemp)  * 0.02953, 4)
-              + "&pressureDiff="      + diffPStr;  // diff stays absolute
+              + "&pressureDiff="      + diffPStr   // diff stays absolute
+              + "&cyclesToday="       + String(cyclesToday)
+              + "&coastMinutes="      + String(lastCoastMinutes, 1)
+              + "&avgCycleMinutes="   + String(avgCycleMinutes, 2);
 
   String urlFinal = googleURL + data;
   Serial.println("\n[HTTP] Target: " + urlFinal);
@@ -679,7 +743,7 @@ void logData() {
   if (!LittleFS.exists("/log.txt")) {
     File setupFile = LittleFS.open("/log.txt", FILE_WRITE);
     if (!setupFile) return;
-    setupFile.println("Timestamp, OutsideTemp, InsideTemp, InsideHumidity, Setpoint, EventDuration, TotalRuntime, OutsidePressure_inHg, InsidePressure_inHg, PressureDiff_inHg");
+    setupFile.println("Timestamp, OutsideTemp, InsideTemp, InsideHumidity, Setpoint, EventDuration, TotalRuntime, OutsidePressure_inHg, InsidePressure_inHg, PressureDiff_inHg, CyclesToday, CoastMin, AvgCycleMin");
     setupFile.close();
   }
   File appendLog = LittleFS.open("/log.txt", FILE_APPEND);
@@ -704,7 +768,10 @@ void logData() {
   appendLog.print(" inHg, Diff: ");
   if (bmeOffline) appendLog.print("Offline");
   else            appendLog.print(sensordata.pressureDiffHPa * 0.02953, 4);
-  appendLog.print(" inHg\n");
+  appendLog.print(" inHg, Cycles: ");   appendLog.print(cyclesToday);
+  appendLog.print(", Coast: ");         appendLog.print(lastCoastMinutes, 1);
+  appendLog.print(" min, AvgCycle: ");  appendLog.print(avgCycleMinutes, 2);
+  appendLog.print(" min\n");
   appendLog.close();
 }
 
@@ -713,7 +780,7 @@ void logDailyTotal(String stamp, double dailyM, double eventM) {
   if (!LittleFS.exists("/daily_totals.csv")) {
     File setupFile = LittleFS.open("/daily_totals.csv", FILE_WRITE);
     if (!setupFile) return;
-    setupFile.println("Timestamp,DailyTotalMinutes,LastEventMinutes");
+    setupFile.println("Timestamp,DailyTotalMinutes,LastEventMinutes,CyclesToday,AvgCycleMinutes");
     setupFile.close();
   }
   File appendLog = LittleFS.open("/daily_totals.csv", FILE_APPEND);
@@ -722,7 +789,11 @@ void logDailyTotal(String stamp, double dailyM, double eventM) {
   appendLog.print(",");
   appendLog.print(dailyM, 2);
   appendLog.print(",");
-  appendLog.println(eventM, 2);
+  appendLog.print(eventM, 2);
+  appendLog.print(",");
+  appendLog.print(cyclesToday);
+  appendLog.print(",");
+  appendLog.println(avgCycleMinutes, 2);
   appendLog.close();
 }
 
@@ -732,10 +803,13 @@ void logDailyTotal(String stamp, double dailyM, double eventM) {
 // a cal session. NVS (Preferences) uses a log-structured write scheme
 // specifically tolerant of interrupted writes -- same rationale as the
 // blower node's existing dailyTotalMinutes persistence.
+// July 19: cycle-tracking state (cyclesToday, lastOffEpoch) added.
 void saveState() {
   statePrefs.begin(STATE_NAMESPACE, false);   // read/write
   statePrefs.putDouble("elapsed", elapsedMinutes);
   statePrefs.putDouble("dailyTot", dailyTotalMinutes);
+  statePrefs.putInt("cycles", cyclesToday);
+  statePrefs.putLong64("lastOff", (int64_t)lastOffEpoch);
   statePrefs.end();
 }
 
@@ -745,6 +819,11 @@ bool restoreState() {
   if (exists) {
     elapsedMinutes    = statePrefs.getDouble("elapsed",  0.0);
     dailyTotalMinutes = statePrefs.getDouble("dailyTot", 0.0);
+    cyclesToday       = statePrefs.getInt("cycles", 0);
+    lastOffEpoch      = (time_t)statePrefs.getLong64("lastOff", 0);
+    if (cyclesToday > 0) {
+      avgCycleMinutes = dailyTotalMinutes / (double)cyclesToday;
+    }
   }
   statePrefs.end();
   return exists;
