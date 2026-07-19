@@ -71,7 +71,7 @@ thermostat temperature, elapsed blower time, and daily total blower, outside pre
 11. Set **Execute as:** Me.
 12. Set **Who has access:** Anyone.
 13. Click **Authorize** → **Advanced** → click your Gmail account → **Allow**.
-14. Copy the deployment URL and paste it into the Receiver sketch as the Google Script id endpoint.
+14. Copy the deployment ID and paste it into the Receiver sketch as the Google Script id endpoint.
 
 > **Note:** If you redeploy after changes, you must create a **New Deployment** each time —
 > not "Manage existing." The Receiver sketch URL must be updated to match the new deployment URL.
