@@ -76,6 +76,8 @@ thermostat temperature, elapsed blower time, and daily total blower, outside pre
 > **Note:** If you redeploy after changes, you must create a **New Deployment** each time —
 > not "Manage existing." The Receiver sketch URL must be updated to match the new deployment URL.
 
+[Live perpetual Google Sheet](https://docs.google.com/spreadsheets/d/1I8YJg2rJ6niNyHXX-MTjp9aYh68fHtGoeyfJ15A9JZE/edit?usp=sharing)
+
 ---
 
 ## Logged Data Format
