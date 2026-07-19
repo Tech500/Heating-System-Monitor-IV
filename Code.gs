@@ -1,34 +1,47 @@
 const sheet_id = "Removed for security";
 
-const headers = ['lastUpdate', 'outsideTemp', 'insideTemp', 'insideHumidity', 'thermostat', 'elapsedMinutes', 'dailyTotalMinutes', 'outsidePressure', 'insidePressure', 'pressureDiff'];
+const headers = ['lastUpdate', 'outsideTemp', 'insideTemp', 'insideHumidity', 'thermostat',
+                 'elapsedMinutes', 'dailyTotalMinutes', 'outsidePressure', 'insidePressure',
+                 'pressureDiff', 'cyclesToday', 'coastMinutes', 'avgCycleMinutes'];
 
 const now = new Date();
 const sheetName = `${getMonthNames(now.getMonth())} ${now.getFullYear()}`;
 const ss = SpreadsheetApp.openById(sheet_id);
 let sheet = ss.getSheetByName(sheetName);
 
-function doGet(e) {  
-  
-  //Change var name = e.paraameter.value for values to be logged
-    
-  var lastUpdate = e.parameter.lastUpdate || "N/A";
-  var outsideTemp = e.parameter.outsideTemp ? parseFloat(e.parameter.outsideTemp) : NaN;
-  var insideTemp = e.parameter.insideTemp ? parseFloat(e.parameter.insideTemp) : NaN;
-  var insideHumidity = e.parameter.insideHumidity ? parseFloat(e.parameter.insideHumidity) : NaN;
-  var thermostat = e.parameter.thermostat ? parseFloat(e.parameter.thermostat) : NaN;
-  var elapsedMinutes = e.parameter.elapsedMinutes ? parseFloat(e.parameter.elapsedMinutes) : NaN;
-  var dailyTotalMinutes = e.parameter.dailyTotalMinutes ? parseFloat(e.parameter.dailyTotalMinutes) : NaN;
-  var outsidePressure = e.parameter.outsidePressure ? parseFloat(e.parameter.outsidePressure) : NaN;
-  var insidePressure = e.parameter.insidePressure ? parseFloat(e.parameter.insidePressure) : NaN;
-  var pressureDiff = e.parameter.pressureDiff ? parseFloat(e.parameter.pressureDiff) : NaN;
+// Preserves the receiver's "Offline" sentinel: numeric strings become numbers,
+// non-numeric text (e.g. "Offline") passes through as text instead of NaN.
+// AVERAGE/charts skip text cells automatically; pandas: na_values=['Offline'].
+function numOrText(v) {
+  if (v === undefined || v === null || v === "") return "";
+  const n = parseFloat(v);
+  return isNaN(n) ? v : n;
+}
 
-  // data = var to be appended to every row of Goole Sheet.
-  const data = [lastUpdate, outsideTemp, insideTemp, insideHumidity, thermostat, elapsedMinutes, dailyTotalMinutes, outsidePressure, insidePressure, pressureDiff];
+function doGet(e) {
 
-  // Logs data to the console
-  console.log(lastUpdate, outsideTemp, insideTemp, insideHumidity, thermostat, elapsedMinutes, dailyTotalMinutes, outsidePressure, insidePressure, pressureDiff);
+  var lastUpdate        = e.parameter.lastUpdate || "N/A";
+  var outsideTemp       = numOrText(e.parameter.outsideTemp);
+  var insideTemp        = numOrText(e.parameter.insideTemp);
+  var insideHumidity    = numOrText(e.parameter.insideHumidity);
+  var thermostat        = numOrText(e.parameter.thermostat);
+  var elapsedMinutes    = numOrText(e.parameter.elapsedMinutes);
+  var dailyTotalMinutes = numOrText(e.parameter.dailyTotalMinutes);
+  var outsidePressure   = numOrText(e.parameter.outsidePressure);
+  var insidePressure    = numOrText(e.parameter.insidePressure);
+  var pressureDiff      = numOrText(e.parameter.pressureDiff);
+  var cyclesToday       = numOrText(e.parameter.cyclesToday);
+  var coastMinutes      = numOrText(e.parameter.coastMinutes);
+  var avgCycleMinutes   = numOrText(e.parameter.avgCycleMinutes);
 
-  //Checks for end of the month; if true creates new sheet. 
+  // data = var to be appended to every row of Google Sheet.
+  const data = [lastUpdate, outsideTemp, insideTemp, insideHumidity, thermostat,
+                elapsedMinutes, dailyTotalMinutes, outsidePressure, insidePressure,
+                pressureDiff, cyclesToday, coastMinutes, avgCycleMinutes];
+
+  console.log(...data);
+
+  // Checks for end of the month; if true creates new sheet.
   if (isEndOfMonth(now)) {
     createNewSheet(sheetName, ss, data);
   } else {
@@ -38,19 +51,20 @@ function doGet(e) {
 }
 
 
-//Retreves name of month.
+// Retrieves name of month.
 function getMonthNames(index) {
-  const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  const months = ["January", "February", "March", "April", "May", "June", "July",
+                  "August", "September", "October", "November", "December"];
   return index !== undefined ? months[index] : months;
 }
 
-//Finds date for the end of the month
+// Finds date for the end of the month
 function isEndOfMonth(date) {
   const endOfMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0);
   return date.getDate() === endOfMonth.getDate();
 }
 
-//Creates new sheet with correct month.
+// Creates new sheet with correct month.
 function createNewSheet(sheetName, ss, data) {
   let sheet = ss.getSheetByName(sheetName);
   if (!sheet) {
@@ -60,7 +74,7 @@ function createNewSheet(sheetName, ss, data) {
   sheet.appendRow(data);
 }
 
-//If not end of month date, opens sheet, writes data and apends data to row.
+// If not end of month date, opens sheet, writes data and appends data to row.
 function logData(sheet, data) {
   if (!sheet) {
     const ss = SpreadsheetApp.openById(sheet_id);
@@ -70,29 +84,39 @@ function logData(sheet, data) {
   sheet.appendRow(data);
 }
 
+// Appends a midnight summary row with yesterday's closing totals.
+// Column indices updated July 19, 2026 for the 13-column schema:
+//   col 7  = dailyTotalMinutes
+//   col 11 = cyclesToday
+//   col 13 = avgCycleMinutes
+// (Previously read cols 7/8/9, which in the 10-column schema were
+//  dailyTotalMinutes / outsidePressure / insidePressure -- stale layout.)
 function insertMidnightSummary() {
   const now = new Date();
   const sheetName = `${getMonthNames(now.getMonth())} ${now.getFullYear()}`;
   const ss = SpreadsheetApp.openById(sheet_id);
   const sheet = ss.getSheetByName(sheetName);
+  if (!sheet) return;
   const lastRow = sheet.getLastRow();
 
   if (lastRow < 2) return; // nothing to summarize
 
-  // Get last totals from today's data
-  const lastData = sheet.getRange(lastRow, 1, 1, 9).getValues()[0];
-  const total = lastData[6]; // dailyTotalMinutes
-  const count = lastData[7]; // eventCount
-  const avg = lastData[8];   // avgRunTimeMinutes
+  // Get last totals from today's data (13 columns)
+  const lastData = sheet.getRange(lastRow, 1, 1, 13).getValues()[0];
+  const total  = lastData[6];   // dailyTotalMinutes  (col 7)
+  const cycles = lastData[10];  // cyclesToday        (col 11)
+  const avg    = lastData[12];  // avgCycleMinutes    (col 13)
 
-  // Build summary row
+  // Build summary row -- pads to the daily-total / cycle columns
   const summaryRow = [
     Utilities.formatDate(now, Session.getScriptTimeZone(), "yyyy-MM-dd 00:00"), // lastUpdate
-    "", "", "", "", // temps
-    "",             // elapsedMinutes (blank)
-    total,
-    count,
-    avg
+    "", "", "", "",   // outsideTemp .. thermostat
+    "",               // elapsedMinutes (blank)
+    total,            // dailyTotalMinutes
+    "", "", "",       // pressures, diff
+    cycles,           // cyclesToday
+    "",               // coastMinutes (per-cycle value, no daily meaning)
+    avg               // avgCycleMinutes
   ];
 
   sheet.appendRow(summaryRow);
