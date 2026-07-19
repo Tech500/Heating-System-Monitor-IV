@@ -149,6 +149,8 @@ numbers, and the receiver's "Offline" sentinel (sent when the outdoor node fails
 is preserved as text. Sheets functions like AVERAGE skip text cells automatically; in
 pandas, load with `na_values=['Offline']`.
 
+[Live perpetuial Google Sheet](https://docs.google.com/spreadsheets/d/1I8YJg2rJ6niNyHXX-MTjp9aYh68fHtGoeyfJ15A9JZE/edit?usp=sharing)
+
 ---
 
 ## Logged Data Format
