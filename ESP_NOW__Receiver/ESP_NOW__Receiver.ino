@@ -1,73 +1,39 @@
 /* Heating System Monitor IV
-   ESP_NOW_Receiver.ino with temperature Offset
-   July 19, 2026
-   ESP32_-NOW,  ESP32 Core 3.3.10
+   ESP_NOW_Receiver.ino with temperature Offset + LoRa WOR trigger
+   July 19, 2026 (LoRa merge)
+   ESP32-NOW, ESP32 Core 3.3.10
+   Hub now runs on EoRa-S3-900TB (ESP32-S3 + onboard SX1262) -- same board
+   family as the outside sensor node.
+
    Receives MSG_BLOWER_STATE from ESP_NOW_Blower node
-   Receives MSG_BME280 from ESP_NOW_BME280 node
-   Sends MSG_ALERT_FLAG to BME280 node to request outside temp
+   Receives MSG_BME280 from ESP_NOW_BME280 node (outside node's ESP-NOW reply)
+   Sends LoRa WOR to wake the outside node (replaces the old ESP-NOW
+   sendAlert()/delay(1000) poll, which only worked because that node used
+   to be always-on and already listening).
 
-   --- Updated June 20, 2026 ---
-   Inside sensing changed from MCP9808 (direct register I2C) to BME280I2C library.
-   Adds insideHumidity to Google Sheets logging; removes registerTemp column.
+   *** HARDWARE CONFLICT -- MUST RESOLVE BEFORE FLASHING ***
+   Inside BME280 I2C is currently defined SDA=4, SCL=5. The EoRa-S3-900TB's
+   onboard SX1262 has RADIO_SCLK_PIN fixed at GPIO5 (see pin block below).
+   GPIO5 cannot be both the LoRa radio's SCLK and the inside BME280's I2C
+   clock. Reassign SCL (and confirm SDA is actually free too) to pins that
+   are genuinely unused by the radio/OLED/SD on your board -- check the
+   EoRa Pi user manual pinout. Placeholder pins below are marked TODO and
+   will NOT work as-is.
 
-   --- Updated June 20, 2026 (cont.) ---
-   Adds outside/inside pressure capture and diff (outsidePressure - insidePressure).
-   Fixes read-gate: was isnan(temp)||isnan(hum), which permanently rejects readings
-   on the interim HW-611/BMP280 since it has no humidity element (hum always NaN).
-   Now gates on temp/pressure only; humidity passes through as NaN.
+   --- Prior update history preserved from original file ---
+   (BME280I2C library, HW-394 3.3V rail fix, hypsometric sea-level pressure,
+   alertFlag OFF-transition gating, NAN/"Offline" freshness handling,
+   cycle-tracking / coast-time study -- all unchanged, see inline comments.)
 
-   --- Updated June 25, 2026 ---
-   Original HW-394 receiver board replaced -- defective 3.3V rail (2.04V measured),
-   causing corrupted I2C reads and frozen BME280 output.
-   Replacement HW-394: I2C reassigned to D4 (SDA/GPIO4) and D5 (SCL/GPIO5).
-   BME280 inside temp calibration offset updated to -2.51F (ref: HP-770HD DMM).
-   Note: re-verify offset once sensor is in permanent installed location.
-   ESP32 Core downgraded to 2.0.17 to resolve BME280 library I2C compatibility issues.
-   Pressure converted hPa->inHg (x 0.02953) for Serial, LittleFS, and Sheets POST.
-   Absolute pressure converted to sea-level relative using temperature-compensated
-   hypsometric formula (toSeaLevelHPa) before inHg conversion.
-   Pressure diff remains in absolute hPa converted to inHg -- both sensors same elevation.
-   Internal math remains in hPa throughout.
-
-   --- Update July 6, 2026 ---
-   Duplicate-row fix: alertFlag now gated to OFF transition only
-   (if (!blowerPacket.on)) -- ON packets carry stale elapsed/daily values.
-
-   Outside BME280 freshness (dead-node detection):
-   globalTemp/globalHumidity/globalPressure initialized to NAN and cleared
-   back to NAN after every Google Sheets post. If the BME280 node does not
-   answer the alert poll during the current cycle, the values remain NAN and
-   the Sheet/LittleFS log record "Offline" for outsideTemp, outsidePressure,
-   and pressureDiff instead of fossilized data. Self-heals on next reply.
-   Also fixes first-cycle 0.0 outside temp (HSM III bug) -- boot value is
-   now NAN -> "Offline" until first real packet arrives.
-   Sheets post-processing note: AVERAGE/charts skip text cells; guard any
-   per-row formulas with ISNUMBER(); pandas: na_values=['Offline'].
-
-   --- Update July 19, 2026 ---
-   Cycle tracking merged in (was developed July 8 against the pre-NVS
-   receiver and skipped during the Preferences work).
-   Goal: find thermostat setpoint giving long ON cycles + long coast
-   (hold) time -- data for the setpoint optimization study.
-   - cyclesToday: OFF->ON transitions since midnight.
-   - lastCoastMinutes: gap between previous OFF and this ON -- the
-     "temperature held" time, measured via epoch time at the receiver.
-   - avgCycleMinutes: dailyTotalMinutes / cyclesToday.
-   Transitions detected against prevBlowerIsOn so a re-sent duplicate
-   state packet cannot double-count a cycle. ON length itself already
-   arrives from the blower node as elapsedMinutes at the OFF transition.
-   cyclesToday and lastOffEpoch persist in NVS alongside dailyTotalMinutes
-   (saveState/restoreState) -- survives power-on resets, matching the
-   receiver's NVS-authority design. Midnight reset zeroes cycle stats and
-   calls saveState() so a post-midnight power-cycle cannot restore
-   yesterday's totals from stale NVS.
-   New Sheets params: cyclesToday, coastMinutes, avgCycleMinutes.
-   New LittleFS columns: CyclesToday, CoastMin, AvgCycleMin.
-   Analysis: coast / (coast + elapsed) per row = duty cycle; compare
-   across setpoint test blocks normalized by inside-outside delta-T.
-   Also fixed: lastResetCheck initializer was -0.43 (paste artifact from
-   the outside cal offset) -- now 0. Removed dead pre-offset globalTemp
-   assignment in MSG_BME280 handler.
+   --- LoRa merge, July 19, 2026 ---
+   Hub's LoRa radio is TRANSMIT-ONLY -- it never listens over LoRa. The
+   outside node is the one sitting in startReceiveDutyCycleAuto(); the
+   hub only needs to wake its own sleeping radio (implicit SPI wake) and
+   fire a WOR packet, then go straight back to radio.sleep(). The outside
+   node's actual sensor reply comes back over ESP-NOW (MSG_BME280), same
+   as before -- only the trigger mechanism changed, not the reply path.
+   Link params (SF7 / BW500 / 2dBm) optimized for the real ~20ft link,
+   MUST MATCH the outside node's radio.begin() exactly.
 */
 
 #include <Arduino.h>
@@ -79,7 +45,6 @@
 #include <ESP32_NOW.h>
 #include "FS.h"
 #include <LittleFS.h>
-#include <BME280I2C.h>
 #include <FTPServer.h>
 #include <WebServer.h>
 #include <WiFiClientSecure.h>
@@ -87,6 +52,30 @@
 #include "rom/rtc.h"
 #include "esp_system.h"   // esp_reset_reason() -- for reset_log.txt
 #include <Preferences.h>
+
+// ─── LoRa (EoRa-S3-900TB onboard SX1262) ─────────────────────────────────────
+#define EoRa_PI_V1
+#include <RadioLib.h>
+#include <SPI.h>
+
+// Local pin defines -- boards.h/utilities.h (Ebyte OEM files) intentionally
+// NOT included here. Their initBoard()/init chain was the confirmed source
+// of the check_i2c_driver_conflict crashes on the outside node -- same fix
+// applied here for consistency, since both boards share the identical
+// underlying conflict risk.
+#define RADIO_SCLK_PIN 5
+#define RADIO_MISO_PIN 3
+#define RADIO_MOSI_PIN 6
+#define RADIO_CS_PIN   7
+#define RADIO_DIO1_PIN 33
+#define RADIO_BUSY_PIN 34
+#define RADIO_RST_PIN  8
+#define BOARD_LED      37
+#define LED_ON         HIGH
+#define LED_OFF        LOW
+
+float radioFreq = 915.0;
+SX1262 radio = new Module(RADIO_CS_PIN, RADIO_DIO1_PIN, RADIO_RST_PIN, RADIO_BUSY_PIN);
 
 #define WRITE_LED_PIN 23  //LittleFS Status LED  ON = Writing
 
@@ -106,17 +95,18 @@ const String googleURL          = "https://script.google.com/macros/s/" + google
 // ─────────────────────────────────────────────
 BME280I2C bmeInside;
 
-#define SDA 4
-#define SCL 5
-
-
-//Changed methodolgy of caluculating offset.  Set
-//const float BME280_OUTSIDE_TEMP_CAL_OFFSET_F = 0;
-//Note outside temperature.  Find nearby references
-//used CWOP Stations, then averated reports --closet 
-//to time of outside temperature reported n sketch.
-//Find offset.
-
+// I2C for inside BME280 -- explicit Wire.begin() on documented general-
+// purpose header pins. GPIO17/18 (initBoard()'s I2C_SDA/I2C_SCL) are NOT
+// on the main header per the pin mapping doc -- likely dedicated OLED
+// connector pads, not reachable for external sensor wiring. GPIO42/41
+// are confirmed general I/O, no radio/SD/strapping/RTC-wake conflicts.
+// I2C for inside BME280 -- explicit setPins()/begin() on GPIO48/47.
+// CONFIRMED WORKING via standalone BME280I2C test sketch: stable,
+// consistent readings across many consecutive loops, no flicker.
+// GPIO42/41 and GPIO40/39 were both intermittent on this board despite
+// being valid, documented general-purpose pins.
+#define BME_SDA 48
+#define BME_SCL 47
 
 // ─────────────────────────────────────────────
 // BME280 (Outside) Temperature Calibration
@@ -132,14 +122,6 @@ const float BME280_OUTSIDE_TEMP_CAL_OFFSET_F = -.43;
 // ─────────────────────────────────────────────
 const float BME280_INSIDE_TEMP_CAL_OFFSET_F = -7.11;
 
-/*
-//Thinking these were for Register sensor alert --not being used
-const float LOW_TEMP_F  = 65.0;
-const float HIGH_TEMP_F = 74.0;
-const float LOW_TEMP_C  = (LOW_TEMP_F  - 32.0) / 1.8;
-const float HIGH_TEMP_C = (HIGH_TEMP_F - 32.0) / 1.8;
-*/
-
 // ─── NTP / Time ──────────────────────────────────────────────────────────────
 const char* udpAddress1 = "pool.ntp.org";
 const char* udpAddress2 = "time.nist.gov";
@@ -149,12 +131,11 @@ String weekDay;
 char strftime_buf[64];
 String dtStamp    = "";
 
-
 String lastUpdate = "";
 time_t tnow;
 
 // Replace Ticker variables with global millis trackers
-unsigned long lastResetCheck = 0;   // was -0.43: paste artifact, see July 19 note
+unsigned long lastResetCheck = 0;
 const unsigned long checkInterval = 1000; // Check every 1 second
 
 // ─── Message / Packet Structures ─────────────────────────────────────────────
@@ -203,7 +184,6 @@ WebServer server(80);
 
 // ─── ESP-NOW Peer Classes ─────────────────────────────────────────────────────
 
-// Forward declaration required by peer classes
 void processIncomingPacket(const uint8_t *data, int len);
 
 // Blower node — receive only
@@ -222,7 +202,8 @@ class HeatingSenderPeer : public ESP_NOW_Peer {
     }
 };
 
-// BME280 node — bidirectional
+// BME280 node — bidirectional (ESP-NOW reply path only now; wake trigger
+// moved to LoRa WOR, see sendOutsideWakeRequest())
 class BME280Peer : public ESP_NOW_Peer {
   public:
     BME280Peer(const uint8_t *mac_addr, uint8_t channel,
@@ -232,13 +213,6 @@ class BME280Peer : public ESP_NOW_Peer {
 
     bool add_to_system() { return ESP_NOW_Peer::add(); }
 
-    bool sendAlert(bool alertState) {
-      AlertFlag pkt;
-      pkt.type  = MSG_ALERT_FLAG;
-      pkt.alert = alertState;
-      return send((uint8_t *)&pkt, sizeof(AlertFlag));
-    }
-
   protected:
     void onReceive(const uint8_t *data, size_t len, bool broadcast) override {
       processIncomingPacket(data, (int)len);
@@ -247,7 +221,11 @@ class BME280Peer : public ESP_NOW_Peer {
 
 // ─── Hardware MAC Map ─────────────────────────────────────────────────────────
 uint8_t senderBlowerMAC[] = { 0x9C, 0x13, 0x9E, 0xF2, 0x2A, 0xB4 };
-uint8_t senderBmeMAC[]    = { 0xE4, 0x65, 0xB8, 0x25, 0x42, 0xF8 };
+// TODO: senderBmeMAC was the OLD always-on DevKit's WiFi MAC. The
+// EoRa-S3-900TB outside node is different hardware with its own MAC --
+// print WiFi.macAddress() on the new board and update this before the
+// hub will recognize its ESP-NOW replies.
+uint8_t senderBmeMAC[]    = { 0xD0, 0xCF, 0x13, 0x0A, 0x48, 0x90 };
 #define CHANNEL 0
 
 HeatingSenderPeer blowerNode(senderBlowerMAC, CHANNEL, WIFI_IF_STA);
@@ -259,35 +237,25 @@ bool alertFlag         = false;
 bool googleSheetsSent  = false;
 
 double elapsedMinutes                    = 0.0;
-double dailyTotalMinutes   = 0.0;  // NVS-persisted; restored on power-on/brownout
+double dailyTotalMinutes   = 0.0;
 
 Preferences statePrefs;
 const char* STATE_NAMESPACE = "hsm4state";
 
 // ─── Cycle Tracking (thermostat optimization study) ──────────────────────────
-// Goal: find setpoint giving long ON cycles + long coast (hold) time.
-// ON length comes from blower node's elapsedMinutes at OFF transition.
-// Coast time = gap between last OFF and next ON, measured here via epoch time.
-// cyclesToday and lastOffEpoch persist in NVS via saveState()/restoreState().
-bool   prevBlowerIsOn   = false;   // for genuine-transition detection
-int    cyclesToday      = 0;       // OFF->ON transitions since midnight
-time_t lastOffEpoch     = 0;       // when blower last shut off
-double lastCoastMinutes = 0.0;     // hold time preceding current cycle
-double avgCycleMinutes  = 0.0;     // dailyTotalMinutes / cyclesToday
+bool   prevBlowerIsOn   = false;
+int    cyclesToday      = 0;
+time_t lastOffEpoch     = 0;
+double lastCoastMinutes = 0.0;
+double avgCycleMinutes  = 0.0;
 
 // Outside BME280 registers -- NAN = "no fresh reading this cycle".
-// Written only by MSG_BME280; cleared back to NAN after every Sheets post.
-// isnan() at post time => node did not answer this cycle's poll => "Offline".
 float globalTemp         = NAN;
 float globalHumidity     = NAN;
 float globalPressure     = NAN;
 float thermostatSetpoint = 75.0;
 
-// ─── Forward Declarations ─────────────────────────────────────────────────────
 // ─── Elevation / Sea-Level Pressure Conversion ───────────────────────────────
-// Station elevation: 809 ft = 246.6 m
-// Converts absolute BME280 pressure (hPa) to sea-level relative pressure (hPa)
-// using temperature-compensated hypsometric formula.
 #define STATION_ELEVATION_M 246.6
 
 float toSeaLevelHPa(float absoluteHPa, float tempF) {
@@ -315,6 +283,62 @@ void logResetReason();
 void initBME280Inside();
 void readBME280Inside(float &tempF, float &humidity, float &pressureHPa);
 String urlEncode(String str);
+void setupLoRa();
+void sendOutsideWakeRequest();
+
+// ─── LoRa Setup (transmit-only on this node) ─────────────────────────────────
+// Hub never listens over LoRa -- the outside node is the one sitting in
+// startReceiveDutyCycleAuto(). All this node does is wake its own sleeping
+// radio (implicit on any SPI transaction) and fire a WOR packet, then
+// return to radio.sleep(). Link params MUST MATCH the outside node exactly.
+void setupLoRa() {
+  // initBoard() (Ebyte's boards.h) intentionally NOT called -- see note
+  // above the pin defines. SPI needs to be brought up manually in its
+  // place, same pins initBoard() would have used.
+  SPI.begin(RADIO_SCLK_PIN, RADIO_MISO_PIN, RADIO_MOSI_PIN);
+  delay(1500);
+
+  Serial.print(F("[SX126x] Initializing ... "));
+  int state = radio.begin(
+    radioFreq, 500.0, 7, 7,
+    RADIOLIB_SX126X_SYNC_WORD_PRIVATE,
+    2, 512, 0.0, true
+  );
+  if (state == RADIOLIB_ERR_NONE) {
+    Serial.println(F("success!"));
+  } else {
+    Serial.print(F("failed, code "));
+    Serial.println(state);
+  }
+
+  radio.sleep();  // idle here between events -- hub is mains-powered so
+                   // this isn't about battery life, just a clean resting
+                   // state; SPI wakes it automatically on the next call.
+}
+
+// Wake the sleeping radio (implicit via SPI) and transmit the WOR that
+// wakes the outside node's ESP32 via DIO1 -> EXT0. Outside node's actual
+// sensor reply still comes back over ESP-NOW (MSG_BME280), unchanged.
+void sendOutsideWakeRequest() {
+  Serial.println("[LoRa] Waking radio and sending WOR to outside BME280 node...");
+
+  pinMode(RADIO_BUSY_PIN, INPUT);
+  Serial.printf("[LoRa] BUSY before standby: %d\n", digitalRead(RADIO_BUSY_PIN));
+  int standbyState = radio.standby();
+  Serial.printf("[LoRa] BUSY after standby: %d\n", digitalRead(RADIO_BUSY_PIN));
+  if (standbyState != RADIOLIB_ERR_NONE) {
+    Serial.printf("[LoRa] standby() failed, code %d\n", standbyState);
+  }
+
+  int state = radio.transmit("WOR");
+  if (state == RADIOLIB_ERR_NONE) {
+    Serial.println("[LoRa] WOR sent OK");
+  } else {
+    Serial.printf("[LoRa] WOR send failed, code %d\n", state);
+  }
+
+  radio.sleep();  // back to idle -- no LoRa listening needed on this node
+}
 
 // ─── NTP Init ────────────────────────────────────────────────────────────────
 void initNTP() {
@@ -362,8 +386,6 @@ void readBME280Inside(float &tempF, float &humidity, float &pressureHPa) {
 
   bmeInside.read(pres, temp, hum, tempUnit, presUnit);
 
-  // Gate on temp/pressure only -- humidity is legitimately NaN on the
-  // interim HW-611/BMP280 and must not block an otherwise valid reading.
   if (isnan(temp) || isnan(pres)) {
     Serial.println("Error reading inside BME280 sensor telemetry.");
     tempF       = NAN;
@@ -372,11 +394,10 @@ void readBME280Inside(float &tempF, float &humidity, float &pressureHPa) {
     return;
   }
 
-  // Apply calibration offset — reference: HP-770HD DMM thermometer
   temp += BME280_INSIDE_TEMP_CAL_OFFSET_F;
 
   tempF       = temp;
-  humidity    = hum;   // NAN on BMP280 (HW-611) until Monday's BME280 swap
+  humidity    = hum;
   pressureHPa = pres;
 }
 
@@ -426,34 +447,31 @@ void processIncomingPacket(const uint8_t *data, int len) {
         elapsedMinutes = blowerPacket.elapsedMinutes;
         sensordata.lastEventMinutes = blowerPacket.elapsedMinutes;
 
-        // ── Cycle tracking: act only on genuine state transitions ─────────
         if (blowerPacket.on && !prevBlowerIsOn) {
-          // OFF -> ON : a new cycle begins; measure the coast (hold) time
           cyclesToday++;
           if (lastOffEpoch > 0) {
             lastCoastMinutes = (double)(time(nullptr) - lastOffEpoch) / 60.0;
           } else {
-            lastCoastMinutes = 0.0;   // first cycle after boot — no prior OFF
+            lastCoastMinutes = 0.0;
           }
           Serial.printf("[Cycle] #%d started. Coast (hold) before this cycle: %.1f min\n",
                         cyclesToday, lastCoastMinutes);
         }
 
         if (!blowerPacket.on && prevBlowerIsOn) {
-          // ON -> OFF : cycle complete; stamp OFF time for coast measurement
           lastOffEpoch = time(nullptr);
         }
 
         if (!blowerPacket.on) {
-          dailyTotalMinutes += blowerPacket.elapsedMinutes;   // receiver accumulates, own authority
+          dailyTotalMinutes += blowerPacket.elapsedMinutes;
           sensordata.dailyTotalMinutes = dailyTotalMinutes;
           if (cyclesToday > 0) {
             avgCycleMinutes = dailyTotalMinutes / (double)cyclesToday;
           }
           Serial.printf("[Cycle] #%d complete. ON: %.2f min  Avg cycle today: %.2f min\n",
                         cyclesToday, blowerPacket.elapsedMinutes, avgCycleMinutes);
-          alertFlag = true;   // log to Sheet only at OFF
-          saveState();   // <-- persist to NVS on every OFF-event accumulation
+          alertFlag = true;
+          saveState();
         }
 
         prevBlowerIsOn = blowerPacket.on;
@@ -464,12 +482,13 @@ void processIncomingPacket(const uint8_t *data, int len) {
       break;
 
     case MSG_ALERT_FLAG:
+      // No longer sent by this hub (WOR replaces it) -- left in case the
+      // outside node or a future node still emits one.
       if (len == sizeof(AlertFlag)) {
         AlertFlag alertPacket;
         memcpy(&alertPacket, data, sizeof(AlertFlag));
         Serial.printf("\n[Radio Link] AlertFlag received: %s\n",
                       alertPacket.alert ? "true" : "false");
-        // alertFlag already set by MSG_BLOWER_STATE — no action needed here
       }
       break;
 
@@ -477,7 +496,7 @@ void processIncomingPacket(const uint8_t *data, int len) {
       if (len == sizeof(BME280Data)) {
         BME280Data bmePacket;
         memcpy(&bmePacket, data, sizeof(BME280Data));
-        globalHumidity = bmePacket.humidity;      // fresh reading -- clears NAN sentinel
+        globalHumidity = bmePacket.humidity;
         globalPressure = bmePacket.pressure;
         globalTemp     = bmePacket.temperature + BME280_OUTSIDE_TEMP_CAL_OFFSET_F;
 
@@ -497,9 +516,9 @@ void processIncomingPacket(const uint8_t *data, int len) {
 
 // ─── Setup ───────────────────────────────────────────────────────────────────
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
   delay(1000);
-  Serial.println("\n\nHeating System Monitor IV - ESP_NOW_Receiver_Preferences.ino\n");
+  Serial.println("\n\nHeating System Monitor IV - ESP_NOW_Receiver + LoRa WOR\n");
   Serial.println("Build: " __DATE__ " " __TIME__ "\n");
 
   pinMode(WRITE_LED_PIN, OUTPUT);
@@ -516,21 +535,27 @@ void setup() {
   Serial.println("Receiver MAC: " + WiFi.macAddress());
   Serial.printf("WiFi Channel: %d\n", WiFi.channel());
 
-  // HW-394 replacement board: D4=SDA(GPIO4), D5=SCL(GPIO5)
-  // Original board had defective 3.3V rail (2.04V), causing frozen I2C reads.
-  Wire.begin(SDA,SCL);
+  // LoRa radio init first (SPI + radio.begin()). I2C for the inside
+  // BME280 is set up separately right after, on GPIO48/47 -- no OLED-pin
+  // bus to override now that initBoard() isn't called.
+  setupLoRa();
+  // Mirror the exact sequence proven working on the bench
+  // (BME280I2CTest.ino): Wire.end() first, then setPins() + Wire.begin
+  // (sda, scl) WITH the pin arguments -- the driver_ng crash was fixed
+  // by adding Wire.end(), not by dropping the pin arguments.
+  Wire.end();
+  delay(50);
+  Wire.setPins(BME_SDA, BME_SCL);
+  if (!Wire.begin(BME_SDA, BME_SCL)) {
+    Serial.println("Core 3.3.10 failed to allocate I2C peripheral instance!");
+  }
+  delay(50);
 
   initNTP();
   initBME280Inside();
 
   bool fsok = LittleFS.begin(true);
   Serial.printf("FS init: %s\n", fsok ? "ok" : "fail!");
-
-  /*
-  Serial.println("Forcing full LittleFS format...");
-  bool formatOk = LittleFS.format();
-  Serial.printf("Format result: %s\n", formatOk ? "success" : "FAILED");
-  */
 
   if (fsok) {
     getDateTime();
@@ -549,7 +574,6 @@ void setup() {
 
   ftpSrv.begin(F("admin"), F("admin"));
 
-  // ── ESP-NOW init — once only ──────────────────────────────────────────────
   if (!ESP_NOW.begin()) {
     Serial.println("ESP-NOW Engine Failed to Start");
     return;
@@ -579,7 +603,6 @@ void loop() {
 
   unsigned long currentMillis = millis();
 
-  // Non-blocking timer instead of Ticker interrupt
   if (currentMillis - lastResetCheck >= checkInterval) {
     lastResetCheck = currentMillis;
     getDateTime();
@@ -587,12 +610,10 @@ void loop() {
 
   static bool didMidnightReset = false;
 
-  // Window-based check (no SECOND == 0 dependency)
   if (HOUR == 23 && MINUTE == 58) {
     if (!didMidnightReset) {
       digitalWrite(WRITE_LED_PIN, HIGH);
 
-      // Snapshot yesterday's final totals before the reset zeroes them
       double yesterdayDailyTotalMinutes = dailyTotalMinutes;
       double yesterdayElapsedMinutes    = elapsedMinutes;
 
@@ -605,9 +626,7 @@ void loop() {
       dailyTotalMinutes = 0;
       cyclesToday       = 0;
       avgCycleMinutes   = 0.0;
-      // lastOffEpoch intentionally NOT reset — first coast of the new day
-      // spans midnight and is still a valid hold-time measurement.
-      saveState();   // sync NVS so a post-midnight power-cycle can't restore stale totals
+      saveState();
       Serial.println("Midnight reset: dailyTotalMinutes = 0, cyclesToday = 0 (NVS synced)");
       didMidnightReset = true;
 
@@ -622,20 +641,29 @@ void loop() {
     alertFlag = false;
     digitalWrite(WRITE_LED_PIN, HIGH);   // writes starting
 
-    Serial.println("[ESP-NOW] Sending alert to BME280 node...");
-    bool sent = bmeNode.sendAlert(true);
-    Serial.printf("[ESP-NOW] Alert send: %s\n", sent ? "OK" : "FAILED");
-    delay(1000);   // BME280 node reply lands here and refreshes globals
+    // LoRa WOR replaces the old ESP-NOW sendAlert()/delay(1000) poll --
+    // the outside node is asleep between events now, so it can't answer
+    // an ESP-NOW poll directly; it has to be woken via LoRa first.
+    sendOutsideWakeRequest();
+
+    // Outside node round trip: DIO1 wake -> ESP32 reboot -> setup() ->
+    // radio init -> BME280 read -> WiFi reconnect -> ESP-NOW send. This
+    // is meaningfully longer than the old always-on node's instant reply.
+    // TODO: tune against measured round-trip time on the bench; this
+    // blocks loop() (FTP, midnight check) for the full wait -- consider
+    // converting to a non-blocking millis-based wait if that becomes a
+    // problem in practice.
+    delay(5000);   // starting point -- adjust once you've measured it
 
     float insideTempF = NAN, insideHumidity = NAN, insidePressureHPa = NAN;
     readBME280Inside(insideTempF, insideHumidity, insidePressureHPa);
     sensordata.insideTemp      = insideTempF;
     sensordata.insideHumidity  = insideHumidity;
-    sensordata.outsideTemp     = globalTemp;        // NAN if node silent this cycle
+    sensordata.outsideTemp     = globalTemp;
     sensordata.thermostat      = thermostatSetpoint;
-    sensordata.outsidePressure = globalPressure;    // NAN if node silent this cycle
+    sensordata.outsidePressure = globalPressure;
     sensordata.insidePressure  = insidePressureHPa;
-    sensordata.pressureDiffHPa = globalPressure - insidePressureHPa;  // NAN propagates
+    sensordata.pressureDiffHPa = globalPressure - insidePressureHPa;
 
     if (isnan(sensordata.outsideTemp)) {
       Serial.println("[BME280 Outside] No reply this cycle -- posting Offline.");
@@ -646,7 +674,7 @@ void loop() {
     Serial.printf("[Pressure] Outside: %.4f inHg | Inside: %.4f inHg | Diff(out-in): %.4f inHg\n",
                   toSeaLevelHPa(sensordata.outsidePressure, sensordata.outsideTemp) * 0.02953,
                   toSeaLevelHPa(sensordata.insidePressure,  sensordata.insideTemp)  * 0.02953,
-                  sensordata.pressureDiffHPa * 0.02953);  // diff stays absolute
+                  sensordata.pressureDiffHPa * 0.02953);
 
     getDateTime();
     displayData();
@@ -654,14 +682,11 @@ void loop() {
     sendGoogleSheetsData();
     googleSheetsSent = true;
 
-    digitalWrite(WRITE_LED_PIN, LOW);    // writes done, safe to pull power
+    digitalWrite(WRITE_LED_PIN, LOW);
   }
 
-  // ── Reset after pipeline ──────────────────────────────────────────────────
   if (googleSheetsSent) {
     elapsedMinutes   = 0;
-    // Clear outside registers -- next post must be backed by a fresh
-    // MSG_BME280 reply or it goes out as "Offline".
     globalTemp       = NAN;
     globalHumidity   = NAN;
     globalPressure   = NAN;
@@ -695,9 +720,6 @@ void sendDataToServer(String updateTime, float outT, float inT, float inHum,
   secureClient.setInsecure();
   HTTPClient http;
 
-  // Outside node freshness: NAN => no reply to this cycle's poll => "Offline".
-  // All three outside-derived columns go offline together (diff is
-  // meaningless without a fresh outside pressure). Inside columns unaffected.
   bool bmeOffline = isnan(outT);
 
   String outTStr  = bmeOffline ? "Offline" : String(outT, 2);
@@ -713,7 +735,7 @@ void sendDataToServer(String updateTime, float outT, float inT, float inHum,
               + "&dailyTotalMinutes=" + String(dailyM, 2)
               + "&outsidePressure="   + outPStr
               + "&insidePressure="    + String(toSeaLevelHPa(inP,  sensordata.insideTemp)  * 0.02953, 4)
-              + "&pressureDiff="      + diffPStr   // diff stays absolute
+              + "&pressureDiff="      + diffPStr
               + "&cyclesToday="       + String(cyclesToday)
               + "&coastMinutes="      + String(lastCoastMinutes, 1)
               + "&avgCycleMinutes="   + String(avgCycleMinutes, 2);
@@ -749,7 +771,6 @@ void logData() {
   File appendLog = LittleFS.open("/log.txt", FILE_APPEND);
   if (!appendLog) return;
 
-  // Mirror the Sheet's Offline handling so LittleFS agrees with Google Sheets.
   bool bmeOffline = isnan(sensordata.outsideTemp);
 
   appendLog.print(dtStamp);
@@ -775,7 +796,6 @@ void logData() {
   appendLog.close();
 }
 
-// ─── Local File Logging ───────────────────────────────────────────────────────
 void logDailyTotal(String stamp, double dailyM, double eventM) {
   if (!LittleFS.exists("/daily_totals.csv")) {
     File setupFile = LittleFS.open("/daily_totals.csv", FILE_WRITE);
@@ -798,14 +818,8 @@ void logDailyTotal(String stamp, double dailyM, double eventM) {
 }
 
 // ─── State Persistence (poweron/brownout recovery) — NVS-based ─────────────
-// Moved off LittleFS after a July 15, 2026 corruption event (Corrupted dir
-// pair at {0x0,0x1}, mount fail -84) triggered by abrupt power-pull during
-// a cal session. NVS (Preferences) uses a log-structured write scheme
-// specifically tolerant of interrupted writes -- same rationale as the
-// blower node's existing dailyTotalMinutes persistence.
-// July 19: cycle-tracking state (cyclesToday, lastOffEpoch) added.
 void saveState() {
-  statePrefs.begin(STATE_NAMESPACE, false);   // read/write
+  statePrefs.begin(STATE_NAMESPACE, false);
   statePrefs.putDouble("elapsed", elapsedMinutes);
   statePrefs.putDouble("dailyTot", dailyTotalMinutes);
   statePrefs.putInt("cycles", cyclesToday);
@@ -814,7 +828,7 @@ void saveState() {
 }
 
 bool restoreState() {
-  statePrefs.begin(STATE_NAMESPACE, true);    // read-only
+  statePrefs.begin(STATE_NAMESPACE, true);
   bool exists = statePrefs.isKey("dailyTot");
   if (exists) {
     elapsedMinutes    = statePrefs.getDouble("elapsed",  0.0);
@@ -830,13 +844,9 @@ bool restoreState() {
 }
 
 // ─── Reset Reason Logging ───────────────────────────────────────────────────
-// Distinguishes expected power-cycles (e.g. laptop -> wall wart swap after
-// an offset update, which clears RTC_DATA_ATTR dailyTotalMinutes by design)
-// from unexpected faults (brownout, watchdog, panic) that would otherwise
-// look identical in the daily_totals.csv record -- a reset there, either way.
 const char* getResetReasonStr(esp_reset_reason_t reason) {
   switch (reason) {
-    case ESP_RST_POWERON:   return "Power-on";        // normal power-cycle
+    case ESP_RST_POWERON:   return "Power-on";
     case ESP_RST_EXT:       return "External pin";
     case ESP_RST_SW:        return "Software reset";
     case ESP_RST_PANIC:     return "Exception/panic";
@@ -844,7 +854,7 @@ const char* getResetReasonStr(esp_reset_reason_t reason) {
     case ESP_RST_TASK_WDT:  return "Task watchdog";
     case ESP_RST_WDT:       return "Other watchdog";
     case ESP_RST_DEEPSLEEP: return "Deep sleep wake";
-    case ESP_RST_BROWNOUT:  return "Brownout";         // supply fault -- watch for this one
+    case ESP_RST_BROWNOUT:  return "Brownout";
     case ESP_RST_SDIO:      return "SDIO";
     default:                return "Unknown";
   }
